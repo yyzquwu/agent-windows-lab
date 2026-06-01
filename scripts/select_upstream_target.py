@@ -70,16 +70,19 @@ TARGETS = [
 
 
 def _run_gh_json(args: list[str]) -> Any:
-    completed = subprocess.run(
-        ["gh", *args],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["gh", *args],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"gh query timed out after {exc.timeout:g} seconds") from exc
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
     if not completed.stdout.strip():

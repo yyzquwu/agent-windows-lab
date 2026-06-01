@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,7 +17,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from agent_windows_lab.harness import _temporary_directory, available_issue_targets
-from select_upstream_target import Target, comment_template, report_to_markdown, scan_targets
+from select_upstream_target import Target, _run_gh_json, comment_template, report_to_markdown, scan_targets
 
 
 class SelectUpstreamTargetTests(unittest.TestCase):
@@ -165,6 +166,11 @@ class SelectUpstreamTargetTests(unittest.TestCase):
 
         self.assertEqual(report["targets"][0]["candidate_count"], 0)
         self.assertEqual(report["targets"][0]["errors"][0]["error"], "denied")
+
+    def test_run_gh_json_reports_timeout_as_query_error(self) -> None:
+        with patch("select_upstream_target.subprocess.run", side_effect=subprocess.TimeoutExpired(["gh"], 30)):
+            with self.assertRaisesRegex(RuntimeError, "timed out after 30 seconds"):
+                _run_gh_json(["issue", "list"])
 
     def test_markdown_report_links_best_issue(self) -> None:
         report = {
