@@ -50,6 +50,25 @@ class VerifyShareableArtifactTests(unittest.TestCase):
 
         self.assertEqual(leaks, [])
 
+    def test_allows_redacted_placeholder_paths_in_markdown(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            path = Path(raw) / "report.md"
+            path.write_text(
+                r'{"path": "%USERPROFILE%\\AppData\\Local\\tool.exe", "module": "%WORKSPACE%\\.tmp\\pkg"}',
+                encoding="utf-8",
+            )
+            leaks = find_shareable_artifact_leaks(path)
+
+        self.assertEqual(leaks, [])
+
+    def test_rejects_private_path_adjacent_to_placeholder(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            path = Path(raw) / "report.md"
+            path.write_text(r'{"mixed": "%WORKSPACE%\\C:\\Users\\alice\\secret.txt"}', encoding="utf-8")
+            leaks = find_shareable_artifact_leaks(path)
+
+        self.assertTrue(any("path-like text" in leak for leak in leaks), leaks)
+
     def test_rejects_missing_or_empty_artifact_path(self) -> None:
         with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             path = Path(raw) / "missing"

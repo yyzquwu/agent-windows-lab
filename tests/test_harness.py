@@ -23,6 +23,7 @@ from agent_windows_lab.harness import (
     available_issue_targets,
     check_browser_agent_environment_probe,
     check_browser_use_mcp_startup_probe,
+    check_mcp_python_sdk_session_lifecycle_probe,
     check_mcp_stdio_jsonrpc_probe,
     check_node_argument_roundtrip,
     check_python_child_stdout_encoding,
@@ -440,6 +441,7 @@ class HarnessTests(unittest.TestCase):
                 "encoding",
                 "environment",
                 "mcp",
+                "mcp-python-sdk-session",
                 "paths",
                 "shell",
                 "stdio",
@@ -478,6 +480,20 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(names[0], "environment")
         self.assertIn("stdio_newline_framing", names)
         self.assertIn("mcp_stdio_jsonrpc_probe", names)
+
+    def test_mcp_python_sdk_session_case_skips_without_sdk(self) -> None:
+        with patch("importlib.util.find_spec", return_value=None):
+            result = check_mcp_python_sdk_session_lifecycle_probe()
+        self.assertEqual(result.status, "skip")
+        self.assertIn("install_hint", result.details)
+
+    def test_run_checks_mcp_python_sdk_session_case_contains_probe(self) -> None:
+        with patch("importlib.util.find_spec", return_value=None):
+            report = run_checks(["mcp-python-sdk-session"])
+        names = [check["name"] for check in report["checks"]]
+        self.assertEqual(report["cases"], ["mcp-python-sdk-session"])
+        self.assertEqual(names[0], "environment")
+        self.assertIn("mcp_python_sdk_session_lifecycle_probe", names)
 
     def test_run_checks_browser_use_mcp_case_contains_startup_context(self) -> None:
         with patch.dict("os.environ", {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": ""}, clear=False):

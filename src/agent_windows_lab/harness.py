@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import locale
 import math
@@ -384,6 +385,184 @@ def check_mcp_stdio_jsonrpc_probe() -> CheckResult:
                 "lf_framed": completed.stdout.endswith(b"\n") and not completed.stdout.endswith(b"\r\n"),
             },
         )
+
+
+def check_mcp_python_sdk_session_lifecycle_probe() -> CheckResult:
+    if importlib.util.find_spec("mcp") is None:
+        return CheckResult(
+            name="mcp_python_sdk_session_lifecycle_probe",
+            status="skip",
+            summary="MCP Python SDK is not installed in this Python environment.",
+            details={
+                "install_hint": "python -m pip install mcp",
+                "purpose": "Probe ClientSession lifecycle behavior for modelcontextprotocol/python-sdk stdio issues.",
+            },
+        )
+
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
+        root = Path(raw)
+        script = root / "mcp_python_sdk_session_lifecycle.py"
+        script.write_text(
+            r'''
+import asyncio
+import json
+import sys
+import time
+import traceback
+
+import mcp
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+SERVER_CODE = "\n".join(
+    [
+        "import json",
+        "import sys",
+        "import time",
+        "line = sys.stdin.buffer.readline()",
+        "request = json.loads(line.decode('utf-8'))",
+        "response = {",
+        "    'jsonrpc': '2.0',",
+        "    'id': request.get('id'),",
+        "    'result': {",
+        "        'protocolVersion': '2025-06-18',",
+        "        'capabilities': {},",
+        "        'serverInfo': {'name': 'agent-windows-lab-sdk-probe', 'version': '1.0.0'},",
+        "    },",
+        "}",
+        "sys.stdout.buffer.write(json.dumps(response, separators=(',', ':')).encode('utf-8') + b'\\n')",
+        "sys.stdout.buffer.flush()",
+        "time.sleep(0.1)",
+    ]
+)
+
+
+def server_params() -> StdioServerParameters:
+    return StdioServerParameters(command=sys.executable, args=["-c", SERVER_CODE])
+
+
+async def correct_context() -> dict[str, object]:
+    started = time.monotonic()
+    async with stdio_client(server_params()) as (read, write):
+        async with ClientSession(read, write) as session:
+            result = await asyncio.wait_for(session.initialize(), timeout=5)
+    server_info = getattr(result, "serverInfo", getattr(result, "server_info", None))
+    return {
+        "status": "completed",
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+        "server_name": getattr(server_info, "name", None),
+        "protocol_version": getattr(result, "protocolVersion", getattr(result, "protocol_version", None)),
+    }
+
+
+async def missing_session_context() -> dict[str, object]:
+    started = time.monotonic()
+    try:
+        async with stdio_client(server_params()) as (read, write):
+            session = ClientSession(read, write)
+            await asyncio.wait_for(session.initialize(), timeout=3)
+        return {
+            "status": "completed_unexpected",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    except BaseException as exc:
+        return {
+            "status": "raised",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "exception_type": type(exc).__name__,
+            "exception": repr(exc),
+        }
+
+
+async def main() -> None:
+    results = {
+        "python": sys.version.split()[0],
+        "mcp_module": getattr(mcp, "__file__", None),
+        "mcp_version": getattr(mcp, "__version__", None),
+        "correct_context": await correct_context(),
+        "missing_session_context": await missing_session_context(),
+    }
+    print(json.dumps(results, sort_keys=True))
+
+
+try:
+    asyncio.run(main())
+except BaseException as exc:
+    print(
+        json.dumps(
+            {
+                "top_level_error": repr(exc),
+                "top_level_error_type": type(exc).__name__,
+                "traceback": traceback.format_exc(),
+            },
+            sort_keys=True,
+        )
+    )
+    raise
+'''.lstrip(),
+            encoding="utf-8",
+        )
+        try:
+            completed = _run([sys.executable, str(script)], cwd=root, timeout=20)
+        except subprocess.TimeoutExpired as exc:
+            return CheckResult(
+                name="mcp_python_sdk_session_lifecycle_probe",
+                status="fail",
+                summary="MCP Python SDK ClientSession lifecycle probe exceeded the process timeout.",
+                details={"timeout_seconds": exc.timeout},
+            )
+
+    payload: dict[str, Any] = {}
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        pass
+
+    correct = payload.get("correct_context", {})
+    missing = payload.get("missing_session_context", {})
+    correct_ok = correct.get("status") == "completed"
+    missing_exception = missing.get("exception_type")
+    missing_exception_text = str(missing.get("exception", ""))
+    missing_elapsed = missing.get("elapsed_seconds")
+    missing_fast_guard = (
+        missing.get("status") == "raised"
+        and missing_exception == "RuntimeError"
+        and isinstance(missing_elapsed, (int, float))
+        and missing_elapsed < 1.0
+    )
+    missing_timeout = (
+        missing.get("status") == "raised"
+        and (missing_exception == "TimeoutError" or "TimeoutError" in missing_exception_text)
+    )
+
+    if completed.returncode != 0 or not payload:
+        status = "fail"
+        summary = "MCP Python SDK ClientSession lifecycle probe failed before producing structured evidence."
+    elif correct_ok and missing_fast_guard:
+        status = "pass"
+        summary = "Proper ClientSession context initializes, and missing context fails fast instead of hanging."
+    elif correct_ok and missing_timeout:
+        status = "warn"
+        summary = "Proper ClientSession context initializes, but missing context did not complete before timeout."
+    elif correct_ok:
+        status = "warn"
+        summary = "Proper ClientSession context initializes, but missing-context behavior was not a fast guard."
+    else:
+        status = "fail"
+        summary = "MCP Python SDK did not initialize successfully with the proper ClientSession context."
+
+    return CheckResult(
+        name="mcp_python_sdk_session_lifecycle_probe",
+        status=status,
+        summary=summary,
+        details={
+            "returncode": completed.returncode,
+            "stdout": completed.stdout.strip(),
+            "stderr": completed.stderr.strip(),
+            "payload": payload,
+        },
+    )
 
 
 def check_shell_encoding_probe() -> CheckResult:
@@ -842,6 +1021,7 @@ CASE_CHECKS: dict[str, tuple[CheckFn, ...]] = {
     "environment": (check_environment,),
     "encoding": (check_python_child_stdout_encoding, check_shell_encoding_probe),
     "mcp": (check_stdio_newline_framing, check_mcp_stdio_jsonrpc_probe),
+    "mcp-python-sdk-session": (check_mcp_python_sdk_session_lifecycle_probe,),
     "paths": (check_path_shapes, check_long_path_probe),
     "shell": (check_shell_encoding_probe, check_shell_launch_context),
     "stdio": (check_stdio_newline_framing,),

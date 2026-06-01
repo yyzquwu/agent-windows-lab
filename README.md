@@ -17,6 +17,7 @@ python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --case stdio --redact --json
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --case subprocess --case encoding --redact
 python .\scripts\run_agent_windows_lab.py --out .\artifacts\issue-packet --case mcp --case browser --case shell --issue-target modelcontextprotocol-python-sdk
+python .\scripts\run_agent_windows_lab.py --out .\artifacts\python-sdk-session --case mcp-python-sdk-session --redact --issue-target modelcontextprotocol-python-sdk
 python .\scripts\run_agent_windows_lab.py --out .\artifacts\browser-use-mcp --case browser-use-mcp --redact --issue-target browser-use
 python .\scripts\select_upstream_target.py --out .\artifacts\target-selection --comment-template
 python .\scripts\verify_redacted_report.py .\artifacts\agent-windows-lab-report.json
@@ -36,10 +37,12 @@ Windows, UNC, or POSIX tool paths.
 
 Use `--case` for focused, issue-ready repro reports. Available cases are
 `browser`, `browser-use-mcp`, `environment`, `paths`, `subprocess`, `encoding`,
-`mcp`, `shell`, and `stdio`; repeat `--case` to combine them. Focused reports
-include the environment check automatically so the output still has useful
-Windows/runtime context for upstream maintainers. The `browser-use-mcp` case is
-opt-in for external process launch; set
+`mcp`, `mcp-python-sdk-session`, `shell`, and `stdio`; repeat `--case` to
+combine them. Focused reports include the environment check automatically so the
+output still has useful Windows/runtime context for upstream maintainers. The
+`mcp-python-sdk-session` case is opt-in for an installed `mcp` Python SDK and
+checks `ClientSession` lifecycle behavior. The `browser-use-mcp` case is opt-in
+for external process launch; set
 `AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND` to a JSON command array such as
 `["uvx", "--from", "browser-use[cli]", "browser-use", "--mcp"]`.
 
@@ -74,7 +77,7 @@ On 2026-05-31, the harness completed end-to-end on Windows 11 with:
 
 - 5 passing checks
 - 3 warning/evidence checks
-- 46 passing unit tests
+- 51 passing unit tests
 
 The most useful findings were CRLF text-mode stdout, child Python stdout
 defaulting to `cp1252`, and long nested path failure at 416 characters. See

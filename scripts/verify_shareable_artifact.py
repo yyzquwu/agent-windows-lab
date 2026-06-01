@@ -13,6 +13,10 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 SENSITIVE_KEYS = {"body"}
+SAFE_PLACEHOLDER_PATH_PATTERN = re.compile(
+    r"%(?:USERPROFILE|WORKSPACE|TEMP|PATH)%(?:(?:\\\\|\\|/)(?![A-Za-z]:)[^\\/\r\n\"'<>|`{},\s]+)+",
+    re.IGNORECASE,
+)
 PRIVATE_PATH_PATTERNS = [
     re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/]+", re.IGNORECASE),
     re.compile(r"[A-Za-z]:[\\/]+[^\\/\r\n]+[\\/]+AppData[\\/]", re.IGNORECASE),
@@ -43,7 +47,8 @@ def _artifact_files(path: Path) -> list[Path]:
 
 
 def _looks_private_path(value: str) -> bool:
-    return any(pattern.search(value) for pattern in PRIVATE_PATH_PATTERNS)
+    without_placeholders = SAFE_PLACEHOLDER_PATH_PATTERN.sub("%PATH%", value)
+    return any(pattern.search(without_placeholders) for pattern in PRIVATE_PATH_PATTERNS)
 
 
 def _json_leaks(path: Path, payload: Any) -> list[str]:

@@ -218,6 +218,12 @@ class SelectUpstreamTargetTests(unittest.TestCase):
         browser_use = next(target for target in TARGETS if target.key == "browser-use")
         self.assertIn("browser-use-mcp", browser_use.cases)
 
+    def test_python_sdk_target_includes_session_lifecycle_case(self) -> None:
+        from select_upstream_target import TARGETS
+
+        python_sdk = next(target for target in TARGETS if target.key == "modelcontextprotocol-python-sdk")
+        self.assertIn("mcp-python-sdk-session", python_sdk.cases)
+
     def test_all_targets_can_generate_issue_packets(self) -> None:
         from select_upstream_target import TARGETS
 

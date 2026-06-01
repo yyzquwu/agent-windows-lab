@@ -34,7 +34,7 @@ TARGETS = [
     Target(
         key="modelcontextprotocol-python-sdk",
         repo="modelcontextprotocol/python-sdk",
-        cases=("mcp", "shell"),
+        cases=("mcp", "mcp-python-sdk-session", "shell"),
         search_terms=("windows stdio", "windows CRLF", "windows subprocess"),
         focus=ISSUE_TARGETS["modelcontextprotocol-python-sdk"]["focus"],
     ),
