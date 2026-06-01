@@ -44,6 +44,12 @@ jobs:
       - name: Verify focused redacted report
         run: python .\scripts\verify_redacted_report.py .\artifacts\focused-stdio\agent-windows-lab-report.json
 
+      - name: Run agentic issue packet
+        run: python .\scripts\run_agent_windows_lab.py --out .\artifacts\issue-packet --case mcp --case browser --case shell --issue-target modelcontextprotocol-python-sdk --json
+
+      - name: Verify issue packet report
+        run: python .\scripts\verify_redacted_report.py .\artifacts\issue-packet\agent-windows-lab-report.json
+
       - name: Upload redacted evidence
         if: always()
         uses: actions/upload-artifact@v7.0.1

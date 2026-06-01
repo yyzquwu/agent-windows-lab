@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import locale
+import os
 import platform
 import re
 import shutil
@@ -48,6 +49,30 @@ class CheckResult:
 
 
 CheckFn = Callable[[], CheckResult]
+
+
+ISSUE_TARGETS: dict[str, dict[str, str]] = {
+    "generic": {
+        "repo": "any agentic OSS project",
+        "url": "https://github.com/yyzquwu/agent-windows-lab",
+        "focus": "Windows process, stdio, path, shell, browser, and MCP evidence",
+    },
+    "modelcontextprotocol-python-sdk": {
+        "repo": "modelcontextprotocol/python-sdk",
+        "url": "https://github.com/modelcontextprotocol/python-sdk",
+        "focus": "MCP stdio framing and Windows regression-test evidence",
+    },
+    "modelcontextprotocol-servers": {
+        "repo": "modelcontextprotocol/servers",
+        "url": "https://github.com/modelcontextprotocol/servers",
+        "focus": "MCP server filesystem/path and stdio behavior on Windows",
+    },
+    "microsoft-playwright-mcp": {
+        "repo": "microsoft/playwright-mcp",
+        "url": "https://github.com/microsoft/playwright-mcp",
+        "focus": "Browser-agent MCP startup, profile path, and Windows stdio evidence",
+    },
+}
 
 
 def _run(
@@ -266,6 +291,65 @@ def check_stdio_newline_framing() -> CheckResult:
         )
 
 
+def check_mcp_stdio_jsonrpc_probe() -> CheckResult:
+    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+        root = Path(raw)
+        script = root / "mcp_stdio_probe.py"
+        script.write_text(
+            "import json, sys\n"
+            "line = sys.stdin.buffer.readline()\n"
+            "request = json.loads(line.decode('utf-8'))\n"
+            "response = {\n"
+            "    'jsonrpc': '2.0',\n"
+            "    'id': request.get('id'),\n"
+            "    'result': {'protocolVersion': '2025-06-18', 'serverInfo': {'name': 'probe'}}\n"
+            "}\n"
+            "sys.stdout.buffer.write(json.dumps(response, separators=(',', ':')).encode('utf-8') + b'\\n')\n",
+            encoding="utf-8",
+        )
+        request = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "agent-windows-lab"}, "protocolVersion": "2025-06-18"},
+        }
+        payload = (json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8")
+        completed = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=root,
+            input=payload,
+            capture_output=True,
+            text=False,
+            timeout=20,
+            check=False,
+        )
+        response: dict[str, Any] = {}
+        try:
+            response = json.loads(completed.stdout.decode("utf-8"))
+        except json.JSONDecodeError:
+            pass
+        ok = (
+            completed.returncode == 0
+            and response.get("jsonrpc") == "2.0"
+            and response.get("id") == 1
+            and completed.stdout.endswith(b"\n")
+            and not completed.stdout.endswith(b"\r\n")
+        )
+        return CheckResult(
+            name="mcp_stdio_jsonrpc_probe",
+            status="pass" if ok else "fail",
+            summary="Round-tripped an MCP-style JSON-RPC initialize message over binary stdio with LF framing.",
+            details={
+                "returncode": completed.returncode,
+                "request": request,
+                "response": response,
+                "stdout_hex": completed.stdout.hex(),
+                "stderr_hex": completed.stderr.hex(),
+                "lf_framed": completed.stdout.endswith(b"\n") and not completed.stdout.endswith(b"\r\n"),
+            },
+        )
+
+
 def check_shell_encoding_probe() -> CheckResult:
     probes: dict[str, dict[str, Any]] = {}
     powershell = shutil.which("powershell") or shutil.which("pwsh")
@@ -297,6 +381,94 @@ def check_shell_encoding_probe() -> CheckResult:
         name="shell_encoding_probe",
         status="pass" if ok else "warn",
         summary="Captured shell encoding and code-page signals for repro reports.",
+        details=probes,
+    )
+
+
+def _quote_for_powershell(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _parse_json_stdout(value: str) -> dict[str, Any]:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+
+
+def check_shell_launch_context() -> CheckResult:
+    probes: dict[str, dict[str, Any]] = {}
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    cmd = shutil.which("cmd")
+    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+        root = Path(raw) / f"shell cwd {UNICODE_TOKEN}"
+        root.mkdir()
+        script = root / "shell_probe.py"
+        script.write_text(
+            "import json, os, sys\n"
+            "payload = {'cwd': os.getcwd(), 'env': os.environ.get('AGENT_WINDOWS_LAB_TOKEN'), 'argv': sys.argv[1:]}\n"
+            "sys.stdout.buffer.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))\n",
+            encoding="utf-8",
+        )
+        env = {**os.environ, "AGENT_WINDOWS_LAB_TOKEN": UNICODE_TOKEN}
+        if powershell:
+            command = (
+                f"& {_quote_for_powershell(sys.executable)} "
+                f"{_quote_for_powershell(str(script))} {_quote_for_powershell(UNICODE_TOKEN)}"
+            )
+            ps = subprocess.run(
+                [powershell, "-NoProfile", "-Command", command],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                check=False,
+            )
+            probes["powershell"] = {
+                "returncode": ps.returncode,
+                "observed": _parse_json_stdout(ps.stdout),
+                "stderr": ps.stderr.strip(),
+            }
+        if cmd:
+            command = f'""{sys.executable}" "{script}" "{UNICODE_TOKEN}""'
+            cmd_run = subprocess.run(
+                [cmd, "/c", command],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+                check=False,
+            )
+            probes["cmd"] = {
+                "returncode": cmd_run.returncode,
+                "observed": _parse_json_stdout(cmd_run.stdout),
+                "stderr": cmd_run.stderr.strip(),
+            }
+
+    def probe_ok(item: dict[str, Any]) -> bool:
+        observed = item.get("observed", {})
+        return (
+            item.get("returncode") == 0
+            and observed.get("env") == UNICODE_TOKEN
+            and observed.get("argv") == [UNICODE_TOKEN]
+            and "shell cwd" in observed.get("cwd", "")
+        )
+
+    ok = bool(probes) and all(probe_ok(item) for item in probes.values())
+    return CheckResult(
+        name="shell_launch_context",
+        status="pass" if ok else "warn",
+        summary=(
+            "Verified shell-launched child processes preserve cwd, environment, and Unicode arguments."
+            if ok
+            else "Captured shell launch differences for cwd, environment, or Unicode arguments."
+        ),
         details=probes,
     )
 
@@ -335,17 +507,61 @@ def check_node_argument_roundtrip() -> CheckResult:
         )
 
 
+def check_browser_agent_environment_probe() -> CheckResult:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    program_files = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]
+    browser_candidates = [
+        Path(base) / relative
+        for base in program_files
+        if base
+        for relative in [
+            Path("Microsoft") / "Edge" / "Application" / "msedge.exe",
+            Path("Google") / "Chrome" / "Application" / "chrome.exe",
+        ]
+    ]
+    found_browsers = [str(path) for path in browser_candidates if path.exists()]
+    playwright_cache = str(Path(local_app_data) / "ms-playwright") if local_app_data else None
+    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+        profile_dir = Path(raw) / f"browser profile {UNICODE_TOKEN}"
+        profile_dir.mkdir()
+        marker = profile_dir / "state.json"
+        marker.write_text(json.dumps({"ok": True, "token": UNICODE_TOKEN}), encoding="utf-8")
+        profile_roundtrip = json.loads(marker.read_text(encoding="utf-8"))
+
+    npx = shutil.which("npx")
+    ok = profile_roundtrip.get("token") == UNICODE_TOKEN and bool(npx or found_browsers)
+    return CheckResult(
+        name="browser_agent_environment_probe",
+        status="pass" if ok else "warn",
+        summary="Captured browser-agent prerequisites and verified a Unicode profile path can be created.",
+        details={
+            "npx": npx,
+            "found_browsers": found_browsers,
+            "playwright_cache": playwright_cache,
+            "profile_path_created": str(profile_dir),
+            "profile_roundtrip": profile_roundtrip,
+        },
+    )
+
+
 CASE_CHECKS: dict[str, tuple[CheckFn, ...]] = {
+    "browser": (check_browser_agent_environment_probe,),
     "environment": (check_environment,),
-    "paths": (check_path_shapes, check_long_path_probe),
-    "subprocess": (check_subprocess_argument_roundtrip, check_node_argument_roundtrip),
     "encoding": (check_python_child_stdout_encoding, check_shell_encoding_probe),
+    "mcp": (check_stdio_newline_framing, check_mcp_stdio_jsonrpc_probe),
+    "paths": (check_path_shapes, check_long_path_probe),
+    "shell": (check_shell_encoding_probe, check_shell_launch_context),
     "stdio": (check_stdio_newline_framing,),
+    "subprocess": (check_subprocess_argument_roundtrip, check_node_argument_roundtrip),
 }
 
 
 def available_cases() -> list[str]:
     return ["all", *sorted(CASE_CHECKS)]
+
+
+def available_issue_targets() -> list[str]:
+    return sorted(ISSUE_TARGETS)
 
 
 def _normalize_cases(cases: Iterable[str] | None) -> list[str]:
@@ -489,4 +705,66 @@ def report_to_markdown(report: dict[str, Any]) -> str:
         lines.append(json.dumps(check["details"], indent=2, sort_keys=True, ensure_ascii=False))
         lines.append("```")
         lines.append("")
+    return "\n".join(lines)
+
+
+def issue_packet_to_markdown(report: dict[str, Any], *, target: str = "generic", title: str | None = None) -> str:
+    target_info = ISSUE_TARGETS[target]
+    notable = [check for check in report["checks"] if check["status"] in {"fail", "warn", "skip"}]
+    cases = report.get("cases", ["all"])
+    case_args = " ".join(f"--case {case}" for case in cases if case != "all") or "--case all"
+    issue_title = title or f"Windows agent repro: {', '.join(cases)} evidence from Agent Windows Lab"
+    lines = [
+        f"# {issue_title}",
+        "",
+        "## Target",
+        "",
+        f"- Repository: `{target_info['repo']}`",
+        f"- URL: {target_info['url']}",
+        f"- Focus: {target_info['focus']}",
+        "",
+        "## Summary",
+        "",
+        "Agent Windows Lab produced a redacted Windows repro packet for agentic-tooling behavior.",
+        "The packet is intended to make the issue easy to reproduce, verify, and turn into a regression test.",
+        "",
+        "## Repro Command",
+        "",
+        "```powershell",
+        f"python .\\scripts\\run_agent_windows_lab.py --out .\\artifacts\\issue-packet {case_args} --redact --issue-target {target}",
+        "python .\\scripts\\verify_redacted_report.py .\\artifacts\\issue-packet\\agent-windows-lab-report.json",
+        "```",
+        "",
+        "## Environment",
+        "",
+        f"- Platform: `{report['platform']}`",
+        f"- Cases: `{', '.join(cases)}`",
+        f"- Redacted: `{report.get('redacted') is True}`",
+        "",
+        "## Check Summary",
+        "",
+    ]
+    for status, count in sorted(report["summary"].items()):
+        lines.append(f"- `{status}`: {count}")
+    lines.extend(["", "## Notable Signals", ""])
+    if notable:
+        for check in notable:
+            lines.append(f"- `{check['name']}`: `{check['status']}` - {check['summary']}")
+    else:
+        lines.append("- No failing or warning checks. Use this as a Windows baseline/regression fixture.")
+    lines.extend(["", "## Full Check List", ""])
+    for check in report["checks"]:
+        lines.append(f"- `{check['name']}`: `{check['status']}` - {check['summary']}")
+    lines.extend(
+        [
+            "",
+            "## Evidence Files",
+            "",
+            "- `agent-windows-lab-report.json`",
+            "- `agent-windows-lab-report.md`",
+            "- `agent-windows-lab-issue.md`",
+            "",
+            "All generated evidence should be created with `--redact` and verified before sharing.",
+        ]
+    )
     return "\n".join(lines)

@@ -18,10 +18,15 @@ if str(SCRIPTS) not in sys.path:
 from agent_windows_lab.harness import (
     ARGUMENTS_WITH_SHELL_METACHARS,
     available_cases,
+    available_issue_targets,
+    check_browser_agent_environment_probe,
+    check_mcp_stdio_jsonrpc_probe,
     check_node_argument_roundtrip,
     check_python_child_stdout_encoding,
+    check_shell_launch_context,
     check_stdio_newline_framing,
     check_subprocess_argument_roundtrip,
+    issue_packet_to_markdown,
     redact_report,
     report_to_markdown,
     run_all_checks,
@@ -54,6 +59,22 @@ class HarnessTests(unittest.TestCase):
         result = check_node_argument_roundtrip()
         self.assertIn(result.status, {"pass", "skip"}, result.details)
 
+    def test_mcp_stdio_jsonrpc_probe(self) -> None:
+        result = check_mcp_stdio_jsonrpc_probe()
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertTrue(result.details["lf_framed"], result.details)
+        self.assertEqual(result.details["response"]["id"], 1)
+
+    def test_shell_launch_context_is_evidence_not_failure(self) -> None:
+        result = check_shell_launch_context()
+        self.assertIn(result.status, {"pass", "warn"}, result.details)
+        self.assertTrue(result.details, result.details)
+
+    def test_browser_agent_environment_probe_is_evidence_not_failure(self) -> None:
+        result = check_browser_agent_environment_probe()
+        self.assertIn(result.status, {"pass", "warn"}, result.details)
+        self.assertTrue(result.details["profile_roundtrip"]["ok"])
+
     def test_run_all_checks_report_shape(self) -> None:
         report = run_all_checks()
         names = {check["name"] for check in report["checks"]}
@@ -61,6 +82,8 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("environment", names)
         self.assertIn("stdio_newline_framing", names)
         self.assertIn("subprocess_argument_roundtrip", names)
+        self.assertIn("mcp_stdio_jsonrpc_probe", names)
+        self.assertIn("browser_agent_environment_probe", names)
         environment = next(check for check in report["checks"] if check["name"] == "environment")
         self.assertIn("python_default_encoding", environment["details"])
         self.assertIn("preferred_encoding", environment["details"])
@@ -69,8 +92,12 @@ class HarnessTests(unittest.TestCase):
     def test_available_cases_include_issue_repro_groups(self) -> None:
         self.assertEqual(
             available_cases(),
-            ["all", "encoding", "environment", "paths", "stdio", "subprocess"],
+            ["all", "browser", "encoding", "environment", "mcp", "paths", "shell", "stdio", "subprocess"],
         )
+
+    def test_available_issue_targets_include_first_upstream_lanes(self) -> None:
+        self.assertIn("modelcontextprotocol-python-sdk", available_issue_targets())
+        self.assertIn("microsoft-playwright-mcp", available_issue_targets())
 
     def test_run_checks_filters_to_focused_case_with_environment_context(self) -> None:
         report = run_checks(["stdio"])
@@ -89,6 +116,14 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("stdio_newline_framing", names)
         self.assertIn("python_child_stdout_encoding", names)
         self.assertIn("shell_encoding_probe", names)
+
+    def test_run_checks_mcp_case_contains_stdio_context(self) -> None:
+        report = run_checks(["mcp"])
+        names = [check["name"] for check in report["checks"]]
+        self.assertEqual(report["cases"], ["mcp"])
+        self.assertEqual(names[0], "environment")
+        self.assertIn("stdio_newline_framing", names)
+        self.assertIn("mcp_stdio_jsonrpc_probe", names)
 
     def test_run_checks_rejects_unknown_case(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown case"):
@@ -173,6 +208,14 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn(str(Path.home()), payload)
         self.assertNotIn(Path.home().name, payload)
 
+    def test_issue_packet_markdown_uses_redacted_report(self) -> None:
+        report = redact_report(run_checks(["mcp"]))
+        markdown = issue_packet_to_markdown(report, target="modelcontextprotocol-python-sdk")
+        self.assertIn("modelcontextprotocol/python-sdk", markdown)
+        self.assertIn("--case mcp", markdown)
+        self.assertIn("agent-windows-lab-report.json", markdown)
+        self.assertNotIn(str(Path.home()), markdown)
+
     def test_cli_e2e_focused_case_json(self) -> None:
         completed = subprocess.run(
             [
@@ -198,6 +241,36 @@ class HarnessTests(unittest.TestCase):
             [check["name"] for check in report["checks"]],
             ["environment", "stdio_newline_framing"],
         )
+
+    def test_cli_e2e_issue_packet_implies_redaction(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-windows-lab-test-") as raw:
+            out = Path(raw)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_agent_windows_lab.py"),
+                    "--out",
+                    str(out),
+                    "--case",
+                    "mcp",
+                    "--issue-target",
+                    "modelcontextprotocol-python-sdk",
+                    "--json",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            report = json.loads(completed.stdout)
+            issue_markdown = (out / "agent-windows-lab-issue.md").read_text(encoding="utf-8")
+            self.assertTrue(report["redacted"])
+            self.assertIn("modelcontextprotocol/python-sdk", issue_markdown)
+            self.assertEqual(find_redaction_leaks(report), [])
 
 
 if __name__ == "__main__":
