@@ -20,6 +20,13 @@
       "type": "pr-comment",
       "url": "https://github.com/browser-use/browser-use/pull/4657#issuecomment-4596027257",
       "summary": "Added independent Windows MCP startup validation evidence for a Browser Use PR reducing Windows startup timeouts."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "modelcontextprotocol/servers",
+      "type": "pull-request",
+      "url": "https://github.com/modelcontextprotocol/servers/pull/4275",
+      "summary": "Opened a Windows-focused Filesystem MCP PR preserving original and resolved root directory forms after realpath."
     }
   ]
 }
