@@ -1,5 +1,7 @@
 # Agent Windows Lab
 
+[![Windows proof](https://github.com/yyzquwu/agent-windows-lab/actions/workflows/windows-proof.yml/badge.svg)](https://github.com/yyzquwu/agent-windows-lab/actions/workflows/windows-proof.yml)
+
 Agent Windows Lab is a small research and repro harness for the Windows edge
 cases that matter in agentic developer tools: MCP stdio framing, subprocess
 quoting, shell encoding, long paths, spaces, Unicode, and local runtime bridges.
@@ -12,6 +14,7 @@ high-quality upstream issues or pull requests.
 ```powershell
 python .\scripts\run_agent_windows_lab.py --out .\artifacts
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact
+python .\scripts\verify_redacted_report.py .\artifacts\agent-windows-lab-report.json
 python -m unittest discover -s tests
 ```
 
@@ -22,6 +25,8 @@ The harness writes:
 
 Generated artifacts are ignored by Git because they can contain local machine
 paths. Use `--redact` before sharing report output as upstream evidence.
+The verifier script fails if redacted output still contains common absolute
+Windows, UNC, or POSIX tool paths.
 
 ## Current Focus
 

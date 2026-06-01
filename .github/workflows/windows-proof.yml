@@ -1,0 +1,47 @@
+name: Windows proof
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile sources
+        run: python -m compileall -q scripts src tests
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run redacted harness
+        run: python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact --json
+
+      - name: Verify redacted report
+        run: python .\scripts\verify_redacted_report.py .\artifacts\agent-windows-lab-report.json
+
+      - name: Upload redacted evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-windows-lab-report-${{ matrix.python-version }}
+          path: artifacts/
+          if-no-files-found: error

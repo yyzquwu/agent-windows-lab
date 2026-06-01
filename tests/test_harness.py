@@ -11,6 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 from agent_windows_lab.harness import (
     ARGUMENTS_WITH_SHELL_METACHARS,
@@ -22,6 +25,7 @@ from agent_windows_lab.harness import (
     report_to_markdown,
     run_all_checks,
 )
+from verify_redacted_report import find_redaction_leaks
 
 
 class HarnessTests(unittest.TestCase):
@@ -102,6 +106,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(details["unc_tool"], "%PATH%")
         self.assertEqual(details["posix_tool"], "%PATH%")
         self.assertEqual(details["raw_hex"], b"value=\xe9".hex())
+        self.assertEqual(find_redaction_leaks(redacted), [])
 
     def test_cli_e2e_json(self) -> None:
         completed = subprocess.run(
