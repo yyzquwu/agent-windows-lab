@@ -13,6 +13,13 @@
       "type": "issue-comment",
       "url": "https://github.com/browser-use/browser-use/issues/4580#issuecomment-4590310874",
       "summary": "Added redacted Windows browser/path/shell baseline evidence for a Browser Use MCP startup timeout report."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "browser-use/browser-use",
+      "type": "pr-comment",
+      "url": "https://github.com/browser-use/browser-use/pull/4657#issuecomment-4596027257",
+      "summary": "Added independent Windows MCP startup validation evidence for a Browser Use PR reducing Windows startup timeouts."
     }
   ]
 }
