@@ -1,0 +1,46 @@
+# Agent Windows Lab
+
+Agent Windows Lab is a small research and repro harness for the Windows edge
+cases that matter in agentic developer tools: MCP stdio framing, subprocess
+quoting, shell encoding, long paths, spaces, Unicode, and local runtime bridges.
+
+The goal is to turn "Windows feels under-loved" into evidence that can become
+high-quality upstream issues or pull requests.
+
+## Run
+
+```powershell
+python .\scripts\run_agent_windows_lab.py --out .\artifacts
+python -m unittest discover -s tests
+```
+
+The harness writes:
+
+- `artifacts/agent-windows-lab-report.json`
+- `artifacts/agent-windows-lab-report.md`
+
+Generated artifacts are ignored by Git because they can contain local machine
+paths. Share them selectively when using the harness as upstream evidence.
+
+## Current Focus
+
+The first contribution thesis is:
+
+> Agent frameworks are increasingly OS-touching software. On Windows, the most
+> valuable contribution lane is validating and fixing process, stdio, path,
+> encoding, and browser/computer-use bridge behavior.
+
+See [docs/research-matrix.md](docs/research-matrix.md) for target repos and
+initial issue clusters.
+
+## First Local Result
+
+On 2026-05-31, the harness completed end-to-end on Windows 11 with:
+
+- 5 passing checks
+- 3 warning/evidence checks
+- 7 passing unit tests
+
+The most useful findings were CRLF text-mode stdout, child Python stdout
+defaulting to `cp1252`, and long nested path failure at 416 characters. See
+[docs/upstream-notes.md](docs/upstream-notes.md).
