@@ -52,6 +52,17 @@
         "https://github.com/modelcontextprotocol/python-sdk/pull/2470"
       ],
       "summary": "Opened a Windows stdio_server PR disabling CRLF newline translation and adding a raw-byte LF regression test."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "modelcontextprotocol/servers",
+      "type": "pr-comment",
+      "url": "https://github.com/modelcontextprotocol/servers/pull/3981#issuecomment-4596743655",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/servers/issues/3756",
+        "https://github.com/modelcontextprotocol/servers/pull/3921"
+      ],
+      "summary": "Added Windows filesystem test and build validation for the broader UNC path fix."
     }
   ]
 }
