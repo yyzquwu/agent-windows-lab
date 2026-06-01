@@ -40,7 +40,7 @@ jobs:
 
       - name: Upload redacted evidence
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: agent-windows-lab-report-${{ matrix.python-version }}
           path: artifacts/
