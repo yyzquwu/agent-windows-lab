@@ -40,6 +40,18 @@
         "https://github.com/modelcontextprotocol/python-sdk/pull/2631"
       ],
       "summary": "Added Windows ClientSession lifecycle evidence for stdio_client initialization hang diagnostics."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "modelcontextprotocol/python-sdk",
+      "type": "pull-request",
+      "url": "https://github.com/modelcontextprotocol/python-sdk/pull/2757",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/python-sdk/issues/2433",
+        "https://github.com/modelcontextprotocol/python-sdk/pull/2440",
+        "https://github.com/modelcontextprotocol/python-sdk/pull/2470"
+      ],
+      "summary": "Opened a Windows stdio_server PR disabling CRLF newline translation and adding a raw-byte LF regression test."
     }
   ]
 }
