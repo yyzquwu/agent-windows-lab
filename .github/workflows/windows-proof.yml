@@ -53,7 +53,10 @@ jobs:
       - name: Select upstream target
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python .\scripts\select_upstream_target.py --out .\artifacts\target-selection --limit-per-query 2
+        run: python .\scripts\select_upstream_target.py --out .\artifacts\target-selection --limit-per-query 2 --comment-template
+
+      - name: Verify target-selection artifact
+        run: python .\scripts\verify_shareable_artifact.py .\artifacts\target-selection
 
       - name: Upload redacted evidence
         if: always()

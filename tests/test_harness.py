@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -17,9 +18,11 @@ if str(SCRIPTS) not in sys.path:
 
 from agent_windows_lab.harness import (
     ARGUMENTS_WITH_SHELL_METACHARS,
+    _temporary_directory,
     available_cases,
     available_issue_targets,
     check_browser_agent_environment_probe,
+    check_browser_use_mcp_startup_probe,
     check_mcp_stdio_jsonrpc_probe,
     check_node_argument_roundtrip,
     check_python_child_stdout_encoding,
@@ -75,6 +78,262 @@ class HarnessTests(unittest.TestCase):
         self.assertIn(result.status, {"pass", "warn"}, result.details)
         self.assertTrue(result.details["profile_roundtrip"]["ok"])
 
+    def test_browser_use_mcp_startup_probe_is_opt_in(self) -> None:
+        with patch.dict("os.environ", {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": ""}, clear=False):
+            result = check_browser_use_mcp_startup_probe()
+        self.assertEqual(result.status, "skip", result.details)
+        self.assertIn("AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND", result.details["command_env_var"])
+
+    def test_browser_use_mcp_startup_probe_handles_bad_timeout_when_skipped(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": "",
+                "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "not-a-number",
+            },
+            clear=False,
+        ):
+            result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "skip", result.details)
+        self.assertEqual(result.details["timeout_seconds"], 45)
+        self.assertEqual(result.details["invalid_timeout_env_value"], "not-a-number")
+
+    def test_browser_use_mcp_startup_probe_rejects_nonfinite_timeout(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "mcp.py"
+            script.write_text(
+                "import json, sys\n"
+                "request = json.loads(sys.stdin.buffer.readline().decode('utf-8'))\n"
+                "response = {'jsonrpc': '2.0', 'id': request.get('id'), 'result': {}}\n"
+                "sys.stdout.buffer.write(json.dumps(response).encode('utf-8') + b'\\n')\n"
+                "sys.stdout.buffer.flush()\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "NaN",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertEqual(result.details["timeout_seconds"], 45)
+        self.assertEqual(result.details["invalid_timeout_env_value"], "NaN")
+
+    def test_browser_use_mcp_startup_probe_uses_valid_initialize_shape(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "strict_mcp.py"
+            script.write_text(
+                "import json, sys\n"
+                "request = json.loads(sys.stdin.buffer.readline().decode('utf-8'))\n"
+                "client = request.get('params', {}).get('clientInfo', {})\n"
+                "if client.get('name') and client.get('version'):\n"
+                "    response = {'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'clientInfo': client}}\n"
+                "else:\n"
+                "    response = {'jsonrpc': '2.0', 'id': request.get('id'), 'error': {'code': -32602}}\n"
+                "sys.stdout.buffer.write(json.dumps(response).encode('utf-8') + b'\\n')\n"
+                "sys.stdout.buffer.flush()\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)])},
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertIn("version", result.details["response"].get("result", {}).get("clientInfo", {}))
+
+    def test_browser_use_mcp_startup_probe_keeps_stdin_open_until_response(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "stdin_sensitive_mcp.py"
+            script.write_text(
+                "import json, sys, threading, time\n"
+                "request = json.loads(sys.stdin.buffer.readline().decode('utf-8'))\n"
+                "state = {'eof': False}\n"
+                "def read_more():\n"
+                "    state['eof'] = sys.stdin.buffer.read(1) == b''\n"
+                "threading.Thread(target=read_more, daemon=True).start()\n"
+                "time.sleep(0.2)\n"
+                "if state['eof']:\n"
+                "    response = {'jsonrpc': '2.0', 'id': request.get('id'), 'error': {'code': -32000}}\n"
+                "else:\n"
+                "    response = {'jsonrpc': '2.0', 'id': request.get('id'), 'result': {}}\n"
+                "sys.stdout.buffer.write(json.dumps(response).encode('utf-8') + b'\\n')\n"
+                "sys.stdout.buffer.flush()\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+
+    def test_browser_use_mcp_startup_probe_preserves_partial_stdout_on_timeout(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "partial_stdout_mcp.py"
+            script.write_text(
+                "import sys, time\n"
+                "sys.stdin.buffer.readline()\n"
+                "sys.stdout.buffer.write(b'{\"jsonrpc\"')\n"
+                "sys.stdout.buffer.flush()\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "0.2",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(result.details["timed_out"], result.details)
+        self.assertIn('{"jsonrpc"', result.details["stdout"])
+
+    def test_browser_use_mcp_startup_probe_kills_child_after_stdin_oserror(self) -> None:
+        class BrokenStdin:
+            closed = False
+
+            def write(self, _payload: bytes) -> int:
+                raise BrokenPipeError("closed")
+
+            def flush(self) -> None:
+                raise AssertionError("flush should not be reached")
+
+            def close(self) -> None:
+                self.closed = True
+
+        class EmptyStream:
+            closed = False
+
+            def read(self, _size: int = -1) -> bytes:
+                return b""
+
+            def readline(self) -> bytes:
+                return b""
+
+            def close(self) -> None:
+                self.closed = True
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = BrokenStdin()
+                self.stdout = EmptyStream()
+                self.stderr = EmptyStream()
+                self.killed = False
+                self.waited = False
+
+            def poll(self) -> int | None:
+                return None if not self.killed else -9
+
+            def kill(self) -> None:
+                self.killed = True
+
+            def wait(self, timeout: int | None = None) -> int:
+                self.waited = True
+                return -9
+
+        fake = FakeProcess()
+        with patch.dict(
+            "os.environ",
+            {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps(["fake-browser-use-mcp"])},
+            clear=False,
+        ):
+            with patch("agent_windows_lab.harness.subprocess.Popen", return_value=fake):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(fake.killed)
+        self.assertTrue(fake.waited)
+
+    def test_browser_use_mcp_startup_probe_reads_response_before_exit(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "long_running_mcp.py"
+            script.write_text(
+                "import json, sys, time\n"
+                "request = json.loads(sys.stdin.buffer.readline().decode('utf-8'))\n"
+                "response = {'jsonrpc': '2.0', 'id': request.get('id'), 'result': {}}\n"
+                "sys.stdout.buffer.write(json.dumps(response).encode('utf-8') + b'\\n')\n"
+                "sys.stdout.buffer.flush()\n"
+                "time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertEqual(result.details["response"]["id"], 1)
+
+    def test_browser_use_mcp_startup_probe_rejects_jsonrpc_error(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "error_mcp.py"
+            script.write_text(
+                "import json, sys\n"
+                "request = json.loads(sys.stdin.buffer.readline().decode('utf-8'))\n"
+                "response = {'jsonrpc': '2.0', 'id': request.get('id'), 'error': {'code': -32602}}\n"
+                "sys.stdout.buffer.write(json.dumps(response).encode('utf-8') + b'\\n')\n"
+                "sys.stdout.buffer.flush()\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)])},
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertIn("error", result.details["response"])
+
+    def test_browser_use_mcp_startup_probe_drains_stderr_before_stdout(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "chatty_mcp.py"
+            script.write_text(
+                "import json, sys\n"
+                "sys.stderr.buffer.write(b'x' * (1024 * 1024))\n"
+                "sys.stderr.buffer.flush()\n"
+                "request = json.loads(sys.stdin.buffer.readline().decode('utf-8'))\n"
+                "response = {'jsonrpc': '2.0', 'id': request.get('id'), 'result': {}}\n"
+                "sys.stdout.buffer.write(json.dumps(response).encode('utf-8') + b'\\n')\n"
+                "sys.stdout.buffer.flush()\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertTrue(result.details["stderr_hex"])
+
     def test_run_all_checks_report_shape(self) -> None:
         report = run_all_checks()
         names = {check["name"] for check in report["checks"]}
@@ -92,12 +351,24 @@ class HarnessTests(unittest.TestCase):
     def test_available_cases_include_issue_repro_groups(self) -> None:
         self.assertEqual(
             available_cases(),
-            ["all", "browser", "encoding", "environment", "mcp", "paths", "shell", "stdio", "subprocess"],
+            [
+                "all",
+                "browser",
+                "browser-use-mcp",
+                "encoding",
+                "environment",
+                "mcp",
+                "paths",
+                "shell",
+                "stdio",
+                "subprocess",
+            ],
         )
 
     def test_available_issue_targets_include_first_upstream_lanes(self) -> None:
         self.assertIn("browser-use", available_issue_targets())
         self.assertIn("modelcontextprotocol-python-sdk", available_issue_targets())
+        self.assertIn("modelcontextprotocol-typescript-sdk", available_issue_targets())
         self.assertIn("microsoft-playwright-mcp", available_issue_targets())
 
     def test_run_checks_filters_to_focused_case_with_environment_context(self) -> None:
@@ -125,6 +396,15 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(names[0], "environment")
         self.assertIn("stdio_newline_framing", names)
         self.assertIn("mcp_stdio_jsonrpc_probe", names)
+
+    def test_run_checks_browser_use_mcp_case_contains_startup_context(self) -> None:
+        with patch.dict("os.environ", {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": ""}, clear=False):
+            report = run_checks(["browser-use-mcp"])
+        names = [check["name"] for check in report["checks"]]
+        self.assertEqual(report["cases"], ["browser-use-mcp"])
+        self.assertEqual(names[0], "environment")
+        self.assertIn("browser_agent_environment_probe", names)
+        self.assertIn("browser_use_mcp_startup_probe", names)
 
     def test_run_checks_rejects_unknown_case(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown case"):
@@ -244,7 +524,7 @@ class HarnessTests(unittest.TestCase):
         )
 
     def test_cli_e2e_issue_packet_implies_redaction(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="agent-windows-lab-test-") as raw:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             out = Path(raw)
             completed = subprocess.run(
                 [

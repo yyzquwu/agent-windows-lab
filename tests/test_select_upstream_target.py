@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+SRC = ROOT / "src"
 import sys
 
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from select_upstream_target import Target, report_to_markdown, scan_targets
+from agent_windows_lab.harness import _temporary_directory, available_issue_targets
+from select_upstream_target import Target, comment_template, report_to_markdown, scan_targets
 
 
 class SelectUpstreamTargetTests(unittest.TestCase):
@@ -36,7 +39,7 @@ class SelectUpstreamTargetTests(unittest.TestCase):
                 return [issue]
             return []
 
-        with tempfile.TemporaryDirectory() as raw:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             log = Path(raw) / "contribution-log.json"
             log.write_text(json.dumps({"contributions": []}), encoding="utf-8")
             with patch("select_upstream_target._run_gh_json", side_effect=fake_run_gh_json):
@@ -47,6 +50,7 @@ class SelectUpstreamTargetTests(unittest.TestCase):
         self.assertGreater(report["targets"][0]["best_score"], 0)
         self.assertEqual(report["targets"][0]["best_issue"]["kind"], "issue")
         self.assertNotIn("body", report["targets"][0]["best_issue"])
+        self.assertIn("could use independent Windows baseline", report["targets"][0]["score_reasons"])
         self.assertFalse(Path(report["contribution_log"]).is_absolute())
 
     def test_scan_targets_can_rank_pull_request_candidate(self) -> None:
@@ -67,7 +71,7 @@ class SelectUpstreamTargetTests(unittest.TestCase):
                 return [pull_request]
             return []
 
-        with tempfile.TemporaryDirectory() as raw:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             log = Path(raw) / "contribution-log.json"
             log.write_text(json.dumps({"contributions": []}), encoding="utf-8")
             with patch("select_upstream_target.TARGETS", [Target("x", "owner/repo", ("mcp",), ("windows",), "focus")]):
@@ -90,7 +94,7 @@ class SelectUpstreamTargetTests(unittest.TestCase):
             "state": "OPEN",
         }
 
-        with tempfile.TemporaryDirectory() as raw:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             log = Path(raw) / "contribution-log.json"
             log.write_text(
                 json.dumps(
@@ -114,7 +118,7 @@ class SelectUpstreamTargetTests(unittest.TestCase):
         self.assertIsNone(report["targets"][0]["best_issue"])
 
     def test_scan_targets_keeps_going_when_query_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             log = Path(raw) / "contribution-log.json"
             log.write_text(json.dumps({"contributions": []}), encoding="utf-8")
             with patch("select_upstream_target.TARGETS", [Target("x", "owner/repo", ("mcp",), ("windows",), "focus")]):
@@ -148,6 +152,39 @@ class SelectUpstreamTargetTests(unittest.TestCase):
         markdown = report_to_markdown(report)
         self.assertIn("microsoft/playwright-mcp", markdown)
         self.assertIn("Best issue/PR: [Windows issue](https://github.com/microsoft/playwright-mcp/issues/1)", markdown)
+
+    def test_comment_template_uses_top_target(self) -> None:
+        report = {
+            "targets": [
+                {
+                    "target": "browser-use",
+                    "repo": "browser-use/browser-use",
+                    "cases": ["browser-use-mcp", "paths"],
+                    "score_reasons": ["recent activity"],
+                    "best_issue": {
+                        "url": "https://github.com/browser-use/browser-use/pull/4657",
+                        "title": "fix Windows startup",
+                    },
+                }
+            ],
+        }
+        template = comment_template(report)
+        self.assertIn("browser-use/browser-use", template)
+        self.assertIn("AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND", template)
+        self.assertIn("--case browser-use-mcp --case paths", template)
+        self.assertIn("<commit-url>", template)
+
+    def test_browser_use_target_includes_mcp_startup_case(self) -> None:
+        from select_upstream_target import TARGETS
+
+        browser_use = next(target for target in TARGETS if target.key == "browser-use")
+        self.assertIn("browser-use-mcp", browser_use.cases)
+
+    def test_all_targets_can_generate_issue_packets(self) -> None:
+        from select_upstream_target import TARGETS
+
+        supported = set(available_issue_targets())
+        self.assertLessEqual({target.key for target in TARGETS}, supported)
 
 
 if __name__ == "__main__":

@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import json
 import locale
+import math
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Generator, Iterable
 
 
 UNICODE_TOKEN = "snow-\u96ea"
@@ -40,6 +46,26 @@ def _locale_encoding() -> str:
     return locale.getpreferredencoding(False)
 
 
+@contextmanager
+def _temporary_directory(prefix: str = "Agent Windows Lab ") -> Generator[str]:
+    root = Path(tempfile.gettempdir())
+    for _ in range(100):
+        path = root / f"{prefix}{uuid.uuid4().hex[:8]}"
+        try:
+            if os.name == "nt":
+                path.mkdir()
+            else:
+                path.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        try:
+            yield str(path)
+        finally:
+            shutil.rmtree(path, ignore_errors=True)
+        return
+    raise FileExistsError(f"Could not create temporary directory under {root}")
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -66,6 +92,11 @@ ISSUE_TARGETS: dict[str, dict[str, str]] = {
         "repo": "modelcontextprotocol/servers",
         "url": "https://github.com/modelcontextprotocol/servers",
         "focus": "MCP server filesystem/path and stdio behavior on Windows",
+    },
+    "modelcontextprotocol-typescript-sdk": {
+        "repo": "modelcontextprotocol/typescript-sdk",
+        "url": "https://github.com/modelcontextprotocol/typescript-sdk",
+        "focus": "TypeScript MCP stdio, subprocess, and Windows path behavior",
     },
     "microsoft-playwright-mcp": {
         "repo": "microsoft/playwright-mcp",
@@ -135,7 +166,7 @@ def check_environment() -> CheckResult:
 
 
 def check_path_shapes() -> CheckResult:
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         target_dir = root / "space dir" / UNICODE_TOKEN
         target_dir.mkdir(parents=True)
@@ -158,7 +189,7 @@ def check_path_shapes() -> CheckResult:
 
 
 def check_long_path_probe() -> CheckResult:
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         current = root
         for index in range(8):
@@ -192,7 +223,7 @@ def check_long_path_probe() -> CheckResult:
 
 
 def check_subprocess_argument_roundtrip() -> CheckResult:
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         script = root / "echo args.py"
         script.write_text(
@@ -218,7 +249,7 @@ def check_subprocess_argument_roundtrip() -> CheckResult:
 
 
 def check_python_child_stdout_encoding() -> CheckResult:
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         script = root / "unicode_stdout.py"
         script.write_text(
@@ -260,7 +291,7 @@ def check_python_child_stdout_encoding() -> CheckResult:
 
 
 def check_stdio_newline_framing() -> CheckResult:
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         text_script = root / "stdio_text.py"
         binary_script = root / "stdio_binary.py"
@@ -297,7 +328,7 @@ def check_stdio_newline_framing() -> CheckResult:
 
 
 def check_mcp_stdio_jsonrpc_probe() -> CheckResult:
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         script = root / "mcp_stdio_probe.py"
         script.write_text(
@@ -405,7 +436,7 @@ def check_shell_launch_context() -> CheckResult:
     probes: dict[str, dict[str, Any]] = {}
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     cmd = shutil.which("cmd")
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw) / f"shell cwd {UNICODE_TOKEN}"
         root.mkdir()
         script = root / "shell_probe.py"
@@ -488,7 +519,7 @@ def check_node_argument_roundtrip() -> CheckResult:
             details={},
         )
 
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
         script = root / "echo args.mjs"
         script.write_text(
@@ -526,7 +557,7 @@ def check_browser_agent_environment_probe() -> CheckResult:
     ]
     found_browsers = [str(path) for path in browser_candidates if path.exists()]
     playwright_cache = str(Path(local_app_data) / "ms-playwright") if local_app_data else None
-    with tempfile.TemporaryDirectory(prefix="Agent Windows Lab ") as raw:
+    with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         profile_dir = Path(raw) / f"browser profile {UNICODE_TOKEN}"
         profile_dir.mkdir()
         marker = profile_dir / "state.json"
@@ -549,8 +580,228 @@ def check_browser_agent_environment_probe() -> CheckResult:
     )
 
 
+def _json_env_list(name: str) -> list[str] | None:
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
+        return []
+    return payload
+
+
+def _float_env(name: str, default: float) -> tuple[float, str | None]:
+    raw = os.environ.get(name)
+    if not raw:
+        return default, None
+    try:
+        value = float(raw)
+    except ValueError:
+        return default, raw
+    if value <= 0 or not math.isfinite(value):
+        return default, raw
+    return value, None
+
+
+def check_browser_use_mcp_startup_probe() -> CheckResult:
+    command_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND"
+    timeout_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S"
+    timeout_s, invalid_timeout = _float_env(timeout_var, 45)
+    command = _json_env_list(command_var)
+    recommended = ["uvx", "--from", "browser-use[cli]", "browser-use", "--mcp"]
+    if command is None:
+        return CheckResult(
+            name="browser_use_mcp_startup_probe",
+            status="skip",
+            summary="Browser Use MCP startup probe is opt-in; set a JSON command array to run it.",
+            details={
+                "command_env_var": command_var,
+                "timeout_env_var": timeout_var,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+                "recommended_command": recommended,
+                "related_upstream": "browser-use/browser-use#4657",
+            },
+        )
+    if not command:
+        return CheckResult(
+            name="browser_use_mcp_startup_probe",
+            status="warn",
+            summary="Browser Use MCP startup command env var was set but was not a JSON string array.",
+            details={
+                "command_env_var": command_var,
+                "timeout_env_var": timeout_var,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+            },
+        )
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "clientInfo": {"name": "agent-windows-lab", "version": "0.1.0"},
+            "capabilities": {},
+        },
+    }
+    payload = (json.dumps(request, separators=(",", ":")) + "\n").encode("utf-8")
+    started = time.monotonic()
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stderr_bytes = bytearray()
+
+        def read_stderr() -> None:
+            while True:
+                chunk = process.stderr.read(4096)
+                if not chunk:
+                    return
+                if len(stderr_bytes) < 4000:
+                    stderr_bytes.extend(chunk[: 4000 - len(stderr_bytes)])
+
+        stderr_reader = threading.Thread(target=read_stderr, daemon=True)
+        stderr_reader.start()
+        process.stdin.write(payload)
+        process.stdin.flush()
+
+        response_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+
+        def read_stdout_line() -> None:
+            response_queue.put(process.stdout.readline())
+
+        reader = threading.Thread(target=read_stdout_line, daemon=True)
+        reader.start()
+        try:
+            first_line_bytes = response_queue.get(timeout=timeout_s)
+        except queue.Empty:
+            raise subprocess.TimeoutExpired(command, timeout_s)
+        elapsed_s = round(time.monotonic() - started, 3)
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        stdout_tail = process.stdout.read()
+        stderr_reader.join(timeout=1)
+        stderr_output = bytes(stderr_bytes)
+        stdout_bytes = first_line_bytes + stdout_tail
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_text = stderr_output.decode("utf-8", errors="replace")
+        response: dict[str, Any] = {}
+        first_line = stdout_text.splitlines()[0] if stdout_text.splitlines() else ""
+        try:
+            response = json.loads(first_line)
+        except json.JSONDecodeError:
+            pass
+        ok = (
+            response.get("jsonrpc") == "2.0"
+            and response.get("id") == 1
+            and "result" in response
+            and "error" not in response
+        )
+        return CheckResult(
+            name="browser_use_mcp_startup_probe",
+            status="pass" if ok else "warn",
+            summary=(
+                "Browser Use MCP process answered an initialize request."
+                if ok
+                else "Browser Use MCP process did not cleanly answer initialize before exit."
+            ),
+            details={
+                "command": command,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+                "elapsed_seconds": elapsed_s,
+                "returncode": process.returncode,
+                "response": response,
+                "stdout": stdout_text[:4000],
+                "stderr": stderr_text[:4000],
+                "stdout_hex": stdout_bytes[:4000].hex(),
+                "stderr_hex": stderr_output[:4000].hex(),
+            },
+        )
+    except subprocess.TimeoutExpired as exc:
+        if process and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        elapsed_s = round(time.monotonic() - started, 3)
+        stdout_reader = locals().get("reader")
+        if isinstance(stdout_reader, threading.Thread):
+            stdout_reader.join(timeout=1)
+        stderr_reader = locals().get("stderr_reader")
+        if isinstance(stderr_reader, threading.Thread):
+            stderr_reader.join(timeout=1)
+        stdout_parts: list[bytes] = []
+        if isinstance(exc.stdout, bytes):
+            stdout_parts.append(exc.stdout)
+        response_queue = locals().get("response_queue")
+        if isinstance(response_queue, queue.Queue):
+            while True:
+                try:
+                    stdout_parts.append(response_queue.get_nowait())
+                except queue.Empty:
+                    break
+        stdout = b"".join(stdout_parts)
+        stderr = bytes(locals().get("stderr_bytes", b""))
+        return CheckResult(
+            name="browser_use_mcp_startup_probe",
+            status="warn",
+            summary="Browser Use MCP process timed out before answering initialize.",
+            details={
+                "command": command,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+                "elapsed_seconds": elapsed_s,
+                "timed_out": True,
+                "stdout": stdout.decode("utf-8", errors="replace")[:4000],
+                "stderr": stderr.decode("utf-8", errors="replace")[:4000],
+                "stdout_hex": stdout[:4000].hex(),
+                "stderr_hex": stderr[:4000].hex(),
+            },
+        )
+    except OSError as exc:
+        if process and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        elapsed_s = round(time.monotonic() - started, 3)
+        return CheckResult(
+            name="browser_use_mcp_startup_probe",
+            status="warn",
+            summary="Browser Use MCP startup command could not be launched.",
+            details={
+                "command": command,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+                "elapsed_seconds": elapsed_s,
+                "error": repr(exc),
+            },
+        )
+    finally:
+        if process is not None:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+
+
 CASE_CHECKS: dict[str, tuple[CheckFn, ...]] = {
     "browser": (check_browser_agent_environment_probe,),
+    "browser-use-mcp": (check_browser_agent_environment_probe, check_browser_use_mcp_startup_probe),
     "environment": (check_environment,),
     "encoding": (check_python_child_stdout_encoding, check_shell_encoding_probe),
     "mcp": (check_stdio_newline_framing, check_mcp_stdio_jsonrpc_probe),
@@ -621,8 +872,8 @@ def redact_report(report: dict[str, Any]) -> dict[str, Any]:
     redacted = json.loads(json.dumps(report))
     replacements: list[tuple[str, str]] = []
     for placeholder, path in [
-        ("%WORKSPACE%", str(Path.cwd())),
         ("%TEMP%", tempfile.gettempdir()),
+        ("%WORKSPACE%", str(Path.cwd())),
         ("%USERPROFILE%", str(Path.home())),
     ]:
         replacements.extend((variant, placeholder) for variant in _path_variants(path))
