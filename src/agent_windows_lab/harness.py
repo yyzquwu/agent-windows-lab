@@ -606,6 +606,34 @@ def _float_env(name: str, default: float) -> tuple[float, str | None]:
     return value, None
 
 
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt" and getattr(process, "pid", None):
+        taskkill = shutil.which("taskkill")
+        if taskkill:
+            subprocess.run(
+                [taskkill, "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            try:
+                process.wait(timeout=5)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+    try:
+        if hasattr(process, "terminate"):
+            process.terminate()
+        else:
+            process.kill()
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        process.kill()
+        process.wait(timeout=5)
+
+
 def check_browser_use_mcp_startup_probe() -> CheckResult:
     command_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND"
     timeout_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S"
@@ -690,17 +718,10 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
         except queue.Empty:
             raise subprocess.TimeoutExpired(command, timeout_s)
         elapsed_s = round(time.monotonic() - started, 3)
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        stdout_tail = process.stdout.read()
+        _terminate_process_tree(process)
         stderr_reader.join(timeout=1)
         stderr_output = bytes(stderr_bytes)
-        stdout_bytes = first_line_bytes + stdout_tail
+        stdout_bytes = first_line_bytes
         stdout_text = stdout_bytes.decode("utf-8", errors="replace")
         stderr_text = stderr_output.decode("utf-8", errors="replace")
         response: dict[str, Any] = {}
@@ -737,9 +758,8 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             },
         )
     except subprocess.TimeoutExpired as exc:
-        if process and process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
+        if process:
+            _terminate_process_tree(process)
         elapsed_s = round(time.monotonic() - started, 3)
         stdout_reader = locals().get("reader")
         if isinstance(stdout_reader, threading.Thread):
@@ -776,9 +796,8 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             },
         )
     except OSError as exc:
-        if process and process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
+        if process:
+            _terminate_process_tree(process)
         elapsed_s = round(time.monotonic() - started, 3)
         return CheckResult(
             name="browser_use_mcp_startup_probe",

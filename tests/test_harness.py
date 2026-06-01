@@ -262,6 +262,78 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(fake.killed)
         self.assertTrue(fake.waited)
 
+    def test_browser_use_mcp_startup_probe_does_not_block_on_stdout_tail(self) -> None:
+        class WritableStdin:
+            closed = False
+
+            def write(self, payload: bytes) -> int:
+                return len(payload)
+
+            def flush(self) -> None:
+                return None
+
+            def close(self) -> None:
+                self.closed = True
+
+        class ResponseStream:
+            closed = False
+
+            def readline(self) -> bytes:
+                return b'{"jsonrpc":"2.0","id":1,"result":{}}\n'
+
+            def read(self, _size: int = -1) -> bytes:
+                raise AssertionError("stdout tail reads can block when child processes inherit the pipe")
+
+            def close(self) -> None:
+                self.closed = True
+
+        class EmptyStream:
+            closed = False
+
+            def read(self, _size: int = -1) -> bytes:
+                return b""
+
+            def close(self) -> None:
+                self.closed = True
+
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.stdin = WritableStdin()
+                self.stdout = ResponseStream()
+                self.stderr = EmptyStream()
+                self.returncode = None
+                self.terminated = False
+                self.waited = False
+
+            def poll(self) -> int | None:
+                return None if not self.terminated else 0
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.returncode = 0
+
+            def kill(self) -> None:
+                self.terminated = True
+                self.returncode = -9
+
+            def wait(self, timeout: int | None = None) -> int:
+                self.waited = True
+                self.terminated = True
+                self.returncode = 0
+                return 0
+
+        fake = FakeProcess()
+        with patch.dict(
+            "os.environ",
+            {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps(["fake-browser-use-mcp"])},
+            clear=False,
+        ):
+            with patch("agent_windows_lab.harness.subprocess.Popen", return_value=fake):
+                result = check_browser_use_mcp_startup_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertTrue(fake.waited)
+
     def test_browser_use_mcp_startup_probe_reads_response_before_exit(self) -> None:
         with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             script = Path(raw) / "long_running_mcp.py"
