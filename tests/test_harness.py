@@ -17,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
 
 from agent_windows_lab.harness import (
     ARGUMENTS_WITH_SHELL_METACHARS,
+    available_cases,
     check_node_argument_roundtrip,
     check_python_child_stdout_encoding,
     check_stdio_newline_framing,
@@ -24,6 +25,7 @@ from agent_windows_lab.harness import (
     redact_report,
     report_to_markdown,
     run_all_checks,
+    run_checks,
 )
 from verify_redacted_report import find_redaction_leaks
 
@@ -55,6 +57,7 @@ class HarnessTests(unittest.TestCase):
     def test_run_all_checks_report_shape(self) -> None:
         report = run_all_checks()
         names = {check["name"] for check in report["checks"]}
+        self.assertEqual(report["cases"], ["all"])
         self.assertIn("environment", names)
         self.assertIn("stdio_newline_framing", names)
         self.assertIn("subprocess_argument_roundtrip", names)
@@ -62,6 +65,34 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("python_default_encoding", environment["details"])
         self.assertIn("preferred_encoding", environment["details"])
         self.assertNotIn("fail", report["summary"], report)
+
+    def test_available_cases_include_issue_repro_groups(self) -> None:
+        self.assertEqual(
+            available_cases(),
+            ["all", "encoding", "environment", "paths", "stdio", "subprocess"],
+        )
+
+    def test_run_checks_filters_to_focused_case_with_environment_context(self) -> None:
+        report = run_checks(["stdio"])
+        self.assertEqual(report["cases"], ["stdio"])
+        self.assertEqual(
+            [check["name"] for check in report["checks"]],
+            ["environment", "stdio_newline_framing"],
+        )
+
+    def test_run_checks_accepts_multiple_cases_without_duplicate_checks(self) -> None:
+        report = run_checks(["stdio", "encoding", "stdio"])
+        self.assertEqual(report["cases"], ["stdio", "encoding"])
+        names = [check["name"] for check in report["checks"]]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names[0], "environment")
+        self.assertIn("stdio_newline_framing", names)
+        self.assertIn("python_child_stdout_encoding", names)
+        self.assertIn("shell_encoding_probe", names)
+
+    def test_run_checks_rejects_unknown_case(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown case"):
+            run_checks(["stdio", "missing"])
 
     def test_markdown_report_contains_statuses(self) -> None:
         report = run_all_checks()
@@ -141,6 +172,32 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(report["redacted"])
         self.assertNotIn(str(Path.home()), payload)
         self.assertNotIn(Path.home().name, payload)
+
+    def test_cli_e2e_focused_case_json(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "run_agent_windows_lab.py"),
+                "--json",
+                "--redact",
+                "--case",
+                "stdio",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["cases"], ["stdio"])
+        self.assertEqual(
+            [check["name"] for check in report["checks"]],
+            ["environment", "stdio_newline_framing"],
+        )
 
 
 if __name__ == "__main__":

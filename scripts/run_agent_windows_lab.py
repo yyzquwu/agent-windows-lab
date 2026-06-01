@@ -10,18 +10,24 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from agent_windows_lab.harness import redact_report, report_to_markdown, run_all_checks
+from agent_windows_lab.harness import available_cases, redact_report, report_to_markdown, run_checks
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Agent Windows Lab checks.")
     parser.add_argument("--out", type=Path, default=ROOT / "artifacts")
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=available_cases(),
+        help="Run one focused repro case. Repeat for multiple cases. Defaults to all.",
+    )
     parser.add_argument("--json", action="store_true", help="Print JSON to stdout.")
     parser.add_argument("--redact", action="store_true", help="Redact local user and machine paths from the report.")
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
-    report = run_all_checks()
+    report = run_checks(args.case)
     failed = [check for check in report["checks"] if check["status"] == "fail"]
     if args.redact:
         report = redact_report(report)

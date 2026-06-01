@@ -10,7 +10,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 
 UNICODE_TOKEN = "snow-\u96ea"
@@ -45,6 +45,9 @@ class CheckResult:
     status: str
     summary: str
     details: dict[str, Any]
+
+
+CheckFn = Callable[[], CheckResult]
 
 
 def _run(
@@ -332,27 +335,65 @@ def check_node_argument_roundtrip() -> CheckResult:
         )
 
 
-def run_all_checks() -> dict[str, Any]:
-    checks = [
-        check_environment(),
-        check_path_shapes(),
-        check_long_path_probe(),
-        check_subprocess_argument_roundtrip(),
-        check_python_child_stdout_encoding(),
-        check_stdio_newline_framing(),
-        check_shell_encoding_probe(),
-        check_node_argument_roundtrip(),
-    ]
+CASE_CHECKS: dict[str, tuple[CheckFn, ...]] = {
+    "environment": (check_environment,),
+    "paths": (check_path_shapes, check_long_path_probe),
+    "subprocess": (check_subprocess_argument_roundtrip, check_node_argument_roundtrip),
+    "encoding": (check_python_child_stdout_encoding, check_shell_encoding_probe),
+    "stdio": (check_stdio_newline_framing,),
+}
+
+
+def available_cases() -> list[str]:
+    return ["all", *sorted(CASE_CHECKS)]
+
+
+def _normalize_cases(cases: Iterable[str] | None) -> list[str]:
+    requested = [case.lower() for case in cases or ["all"]]
+    selected = list(dict.fromkeys(requested))
+    unknown = [case for case in selected if case not in available_cases()]
+    if unknown:
+        known = ", ".join(available_cases())
+        raise ValueError(f"Unknown case(s): {', '.join(unknown)}. Known cases: {known}")
+    if "all" in selected:
+        return ["all"]
+    return selected
+
+
+def _case_check_functions(selected_cases: list[str]) -> list[CheckFn]:
+    if selected_cases == ["all"]:
+        selected_cases = [case for case in available_cases() if case != "all"]
+    elif "environment" not in selected_cases:
+        selected_cases = ["environment", *selected_cases]
+
+    check_fns: list[CheckFn] = []
+    seen: set[str] = set()
+    for case in selected_cases:
+        for check_fn in CASE_CHECKS[case]:
+            if check_fn.__name__ not in seen:
+                check_fns.append(check_fn)
+                seen.add(check_fn.__name__)
+    return check_fns
+
+
+def run_checks(cases: Iterable[str] | None = None) -> dict[str, Any]:
+    selected_cases = _normalize_cases(cases)
+    checks = [check_fn() for check_fn in _case_check_functions(selected_cases)]
     counts: dict[str, int] = {}
     for check in checks:
         counts[check.status] = counts.get(check.status, 0) + 1
     return {
         "schema_version": 1,
         "name": "agent-windows-lab",
+        "cases": selected_cases,
         "platform": platform.platform(),
         "summary": counts,
         "checks": [asdict(check) for check in checks],
     }
+
+
+def run_all_checks() -> dict[str, Any]:
+    return run_checks()
 
 
 def redact_report(report: dict[str, Any]) -> dict[str, Any]:

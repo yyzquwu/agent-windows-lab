@@ -14,6 +14,8 @@ high-quality upstream issues or pull requests.
 ```powershell
 python .\scripts\run_agent_windows_lab.py --out .\artifacts
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact
+python .\scripts\run_agent_windows_lab.py --out .\artifacts --case stdio --redact --json
+python .\scripts\run_agent_windows_lab.py --out .\artifacts --case subprocess --case encoding --redact
 python .\scripts\verify_redacted_report.py .\artifacts\agent-windows-lab-report.json
 python -m unittest discover -s tests
 ```
@@ -27,6 +29,11 @@ Generated artifacts are ignored by Git because they can contain local machine
 paths. Use `--redact` before sharing report output as upstream evidence.
 The verifier script fails if redacted output still contains common absolute
 Windows, UNC, or POSIX tool paths.
+
+Use `--case` for focused, issue-ready repro reports. Available cases are
+`environment`, `paths`, `subprocess`, `encoding`, and `stdio`; repeat `--case`
+to combine them. Focused reports include the environment check automatically so
+the output still has useful Windows/runtime context for upstream maintainers.
 
 ## Current Focus
 
@@ -45,7 +52,7 @@ On 2026-05-31, the harness completed end-to-end on Windows 11 with:
 
 - 5 passing checks
 - 3 warning/evidence checks
-- 7 passing unit tests
+- 14 passing unit tests
 
 The most useful findings were CRLF text-mode stdout, child Python stdout
 defaulting to `cp1252`, and long nested path failure at 416 characters. See

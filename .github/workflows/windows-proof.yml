@@ -38,6 +38,12 @@ jobs:
       - name: Verify redacted report
         run: python .\scripts\verify_redacted_report.py .\artifacts\agent-windows-lab-report.json
 
+      - name: Run focused stdio repro
+        run: python .\scripts\run_agent_windows_lab.py --out .\artifacts\focused-stdio --case stdio --redact --json
+
+      - name: Verify focused redacted report
+        run: python .\scripts\verify_redacted_report.py .\artifacts\focused-stdio\agent-windows-lab-report.json
+
       - name: Upload redacted evidence
         if: always()
         uses: actions/upload-artifact@v7.0.1
