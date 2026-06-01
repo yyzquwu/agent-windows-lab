@@ -9,7 +9,7 @@ on:
 jobs:
   windows:
     name: Windows / Python ${{ matrix.python-version }}
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     env:
       PYTHONUTF8: "1"
     strategy:
