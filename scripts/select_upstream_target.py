@@ -96,7 +96,14 @@ def _load_log(path: Path) -> set[str]:
     if not path.exists():
         return set()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return {_canonical_thread_url(item["url"]) for item in payload.get("contributions", []) if "url" in item}
+    urls: set[str] = set()
+    for item in payload.get("contributions", []):
+        if "url" in item:
+            urls.add(_canonical_thread_url(item["url"]))
+        for related_url in item.get("related_urls", []):
+            if isinstance(related_url, str):
+                urls.add(_canonical_thread_url(related_url))
+    return urls
 
 
 def _display_path(path: Path) -> str:

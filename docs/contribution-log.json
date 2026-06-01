@@ -26,6 +26,9 @@
       "repo": "modelcontextprotocol/servers",
       "type": "pull-request",
       "url": "https://github.com/modelcontextprotocol/servers/pull/4275",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/servers/issues/4129"
+      ],
       "summary": "Opened a Windows-focused Filesystem MCP PR preserving original and resolved root directory forms after realpath."
     }
   ]

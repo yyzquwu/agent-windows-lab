@@ -117,6 +117,44 @@ class SelectUpstreamTargetTests(unittest.TestCase):
         self.assertEqual(report["targets"][0]["best_score"], 0)
         self.assertIsNone(report["targets"][0]["best_issue"])
 
+    def test_scan_targets_filters_related_issue_urls(self) -> None:
+        issue = {
+            "number": 4129,
+            "title": "Filesystem server rejects configured Windows mapped drive path",
+            "url": "https://github.com/modelcontextprotocol/servers/issues/4129",
+            "labels": [{"name": "bug"}],
+            "updatedAt": "2026-06-01T00:00:00Z",
+            "createdAt": "2026-06-01T00:00:00Z",
+            "author": {"login": "tester"},
+            "body": "Windows mapped drive path is canonicalized to UNC",
+            "state": "OPEN",
+        }
+
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            log = Path(raw) / "contribution-log.json"
+            log.write_text(
+                json.dumps(
+                    {
+                        "contributions": [
+                            {
+                                "url": "https://github.com/modelcontextprotocol/servers/pull/4275",
+                                "related_urls": ["https://github.com/modelcontextprotocol/servers/issues/4129"],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch(
+                "select_upstream_target.TARGETS",
+                [Target("modelcontextprotocol-servers", "modelcontextprotocol/servers", ("mcp",), ("windows",), "focus")],
+            ):
+                with patch("select_upstream_target._run_gh_json", return_value=[issue]):
+                    report = scan_targets(limit_per_query=1, log_path=log)
+
+        self.assertEqual(report["targets"][0]["candidate_count"], 0)
+        self.assertIsNone(report["targets"][0]["best_issue"])
+
     def test_scan_targets_keeps_going_when_query_fails(self) -> None:
         with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
             log = Path(raw) / "contribution-log.json"
