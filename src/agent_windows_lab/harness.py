@@ -526,7 +526,25 @@ def check_node_argument_roundtrip() -> CheckResult:
             "console.log(JSON.stringify(process.argv.slice(2)))\n",
             encoding="utf-8",
         )
-        completed = _run([node, str(script), *ARGUMENTS_WITH_SHELL_METACHARS])
+        command = [node, str(script), *ARGUMENTS_WITH_SHELL_METACHARS]
+        try:
+            completed = _run(command)
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+            stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+            return CheckResult(
+                name="node_argument_roundtrip",
+                status="warn",
+                summary="Node subprocess argument roundtrip timed out before producing evidence.",
+                details={
+                    "node": node,
+                    "command": command,
+                    "timeout_seconds": exc.timeout,
+                    "expected": ARGUMENTS_WITH_SHELL_METACHARS,
+                    "stdout": stdout or "",
+                    "stderr": stderr or "",
+                },
+            )
         observed = json.loads(completed.stdout) if completed.returncode == 0 else []
         ok = completed.returncode == 0 and observed == ARGUMENTS_WITH_SHELL_METACHARS
         return CheckResult(

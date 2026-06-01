@@ -74,7 +74,7 @@ On 2026-05-31, the harness completed end-to-end on Windows 11 with:
 
 - 5 passing checks
 - 3 warning/evidence checks
-- 44 passing unit tests
+- 45 passing unit tests
 
 The most useful findings were CRLF text-mode stdout, child Python stdout
 defaulting to `cp1252`, and long nested path failure at 416 characters. See

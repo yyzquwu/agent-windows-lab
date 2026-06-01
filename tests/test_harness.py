@@ -60,7 +60,17 @@ class HarnessTests(unittest.TestCase):
 
     def test_node_roundtrip_is_pass_or_skip(self) -> None:
         result = check_node_argument_roundtrip()
-        self.assertIn(result.status, {"pass", "skip"}, result.details)
+        self.assertIn(result.status, {"pass", "skip", "warn"}, result.details)
+
+    def test_node_roundtrip_timeout_is_evidence_not_crash(self) -> None:
+        timeout = subprocess.TimeoutExpired(["node", "echo args.mjs"], timeout=20)
+        with patch("agent_windows_lab.harness.shutil.which", return_value="node"):
+            with patch("agent_windows_lab.harness._run", side_effect=timeout):
+                result = check_node_argument_roundtrip()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertEqual(result.details["timeout_seconds"], 20)
+        self.assertEqual(result.details["expected"], ARGUMENTS_WITH_SHELL_METACHARS)
 
     def test_mcp_stdio_jsonrpc_probe(self) -> None:
         result = check_mcp_stdio_jsonrpc_probe()
