@@ -30,6 +30,16 @@
         "https://github.com/modelcontextprotocol/servers/issues/4129"
       ],
       "summary": "Opened a Windows-focused Filesystem MCP PR preserving original and resolved root directory forms after realpath."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "modelcontextprotocol/python-sdk",
+      "type": "issue-comment",
+      "url": "https://github.com/modelcontextprotocol/python-sdk/issues/1452#issuecomment-4596513964",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/python-sdk/pull/2631"
+      ],
+      "summary": "Added Windows ClientSession lifecycle evidence for stdio_client initialization hang diagnostics."
     }
   ]
 }
