@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from agent_windows_lab.harness import (
     check_python_child_stdout_encoding,
     check_stdio_newline_framing,
     check_subprocess_argument_roundtrip,
+    redact_report,
     report_to_markdown,
     run_all_checks,
 )
@@ -63,6 +65,44 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("# Agent Windows Lab Report", markdown)
         self.assertIn("stdio_newline_framing", markdown)
 
+    def test_redact_report_sanitizes_local_paths(self) -> None:
+        temp_path = str(Path(tempfile.gettempdir()) / "Agent Windows Lab abc" / "file.txt")
+        profile_path = str(Path.home() / "Documents" / "project" / "file.py")
+        report = {
+            "platform": "Windows-11",
+            "checks": [
+                {
+                    "name": "sample",
+                    "status": "fail",
+                    "details": {
+                        "path": temp_path,
+                        "stderr_hex": temp_path.encode("utf-8").hex(),
+                        "tool": r"C:\Program Files\Git\cmd\git.EXE",
+                        "unc_tool": r"\\server\share\git.exe",
+                        "posix_tool": "/opt/homebrew/bin/node",
+                        "raw_hex": b"value=\xe9".hex(),
+                        "nested": [profile_path],
+                    },
+                }
+            ],
+        }
+        redacted = redact_report(report)
+        details = redacted["checks"][0]["details"]
+        payload = json.dumps(redacted)
+        self.assertTrue(redacted["redacted"])
+        self.assertEqual(redacted["checks"][0]["status"], "fail")
+        self.assertNotIn(temp_path, payload)
+        self.assertNotIn(profile_path, payload)
+        self.assertNotIn(temp_path.encode("utf-8").hex(), payload)
+        self.assertIn("%USERPROFILE%", payload)
+        self.assertIn("%TEMP%", payload)
+        self.assertTrue(details["path"].startswith("%TEMP%"))
+        self.assertIn("%TEMP%", bytes.fromhex(details["stderr_hex"]).decode("utf-8"))
+        self.assertEqual(details["tool"], "%PATH%")
+        self.assertEqual(details["unc_tool"], "%PATH%")
+        self.assertEqual(details["posix_tool"], "%PATH%")
+        self.assertEqual(details["raw_hex"], b"value=\xe9".hex())
+
     def test_cli_e2e_json(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "run_agent_windows_lab.py"), "--json"],
@@ -78,6 +118,24 @@ class HarnessTests(unittest.TestCase):
         report = json.loads(completed.stdout)
         self.assertEqual(report["name"], "agent-windows-lab")
         self.assertNotIn("fail", report["summary"], report)
+
+    def test_cli_e2e_redacted_json(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "run_agent_windows_lab.py"), "--json", "--redact"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        payload = json.dumps(report)
+        self.assertTrue(report["redacted"])
+        self.assertNotIn(str(Path.home()), payload)
+        self.assertNotIn(Path.home().name, payload)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ high-quality upstream issues or pull requests.
 
 ```powershell
 python .\scripts\run_agent_windows_lab.py --out .\artifacts
+python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact
 python -m unittest discover -s tests
 ```
 
@@ -20,7 +21,7 @@ The harness writes:
 - `artifacts/agent-windows-lab-report.md`
 
 Generated artifacts are ignored by Git because they can contain local machine
-paths. Share them selectively when using the harness as upstream evidence.
+paths. Use `--redact` before sharing report output as upstream evidence.
 
 ## Current Focus
 

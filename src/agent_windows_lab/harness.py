@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import locale
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,14 @@ ARGUMENTS_WITH_SHELL_METACHARS = [
     "semi;value",
     UNICODE_TOKEN,
 ]
+
+
+def _path_variants(path: str | None) -> list[str]:
+    if not path:
+        return []
+    normalized = str(Path(path))
+    variants = {path, normalized, normalized.replace("\\", "/"), normalized.replace("/", "\\")}
+    return sorted((variant for variant in variants if variant), key=len, reverse=True)
 
 
 def _locale_encoding() -> str:
@@ -344,6 +353,76 @@ def run_all_checks() -> dict[str, Any]:
         "summary": counts,
         "checks": [asdict(check) for check in checks],
     }
+
+
+def redact_report(report: dict[str, Any]) -> dict[str, Any]:
+    redacted = json.loads(json.dumps(report))
+    replacements: list[tuple[str, str]] = []
+    for placeholder, path in [
+        ("%WORKSPACE%", str(Path.cwd())),
+        ("%TEMP%", tempfile.gettempdir()),
+        ("%USERPROFILE%", str(Path.home())),
+    ]:
+        replacements.extend((variant, placeholder) for variant in _path_variants(path))
+
+    byte_replacements = [
+        (needle.encode("utf-8"), replacement.encode("utf-8"))
+        for needle, replacement in replacements
+        if needle
+    ]
+
+    def redact_string(value: str) -> str:
+        sanitized = value
+        for needle, replacement in replacements:
+            sanitized = sanitized.replace(needle, replacement)
+        sanitized = re.sub(r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/]+", "%USERPROFILE%", sanitized)
+        sanitized = re.sub(r"(?<![A-Za-z0-9_.-])/Users/[^/\s]+", "%USERPROFILE%", sanitized)
+        sanitized = re.sub(r"(?<![A-Za-z0-9_.-])/home/[^/\s]+", "%USERPROFILE%", sanitized)
+        sanitized = re.sub(r"(?<![:A-Za-z0-9_.-])(?:\\\\|//)[^\\/\r\n\"'<>|]+[\\/][^\r\n\"'<>|]+", "%PATH%", sanitized)
+        sanitized = re.sub(r"(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/][^\r\n\"'<>|]+", "%PATH%", sanitized)
+        sanitized = re.sub(
+            r"(?<![:A-Za-z0-9_.-])/(?:usr|opt|bin|sbin|etc|var|tmp|private|Applications|Library|System|nix)/[^\s\"'<>|]+",
+            "%PATH%",
+            sanitized,
+        )
+        return sanitized
+
+    def redact_hex_string(value: str) -> str:
+        try:
+            raw = bytes.fromhex(value)
+        except ValueError:
+            return redact_string(value)
+
+        sanitized = raw
+        for needle, replacement in byte_replacements:
+            sanitized = sanitized.replace(needle, replacement)
+        sanitized = re.sub(rb"[A-Za-z]:[\\/]+Users[\\/]+[^\\/]+", b"%USERPROFILE%", sanitized)
+        sanitized = re.sub(rb"(?<![A-Za-z0-9_.-])/Users/[^/\s]+", b"%USERPROFILE%", sanitized)
+        sanitized = re.sub(rb"(?<![A-Za-z0-9_.-])/home/[^/\s]+", b"%USERPROFILE%", sanitized)
+        sanitized = re.sub(rb"(?<![:A-Za-z0-9_.-])(?:\\\\|//)[^\\/\r\n\"'<>|]+[\\/][^\r\n\"'<>|]+", b"%PATH%", sanitized)
+        sanitized = re.sub(rb"(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/][^\r\n\"'<>|]+", b"%PATH%", sanitized)
+        sanitized = re.sub(
+            rb"(?<![:A-Za-z0-9_.-])/(?:usr|opt|bin|sbin|etc|var|tmp|private|Applications|Library|System|nix)/[^\s\"'<>|]+",
+            b"%PATH%",
+            sanitized,
+        )
+        return sanitized.hex()
+
+    def redact_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: redact_hex_string(item) if key.endswith("_hex") and isinstance(item, str) else redact_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [redact_value(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        return redact_string(value)
+
+    redacted = redact_value(redacted)
+    redacted["redacted"] = True
+    return redacted
 
 
 def report_to_markdown(report: dict[str, Any]) -> str:
