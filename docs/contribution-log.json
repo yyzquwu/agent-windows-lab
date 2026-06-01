@@ -63,6 +63,16 @@
         "https://github.com/modelcontextprotocol/servers/pull/3921"
       ],
       "summary": "Added Windows filesystem test and build validation for the broader UNC path fix."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "modelcontextprotocol/python-sdk",
+      "type": "pr-comment",
+      "url": "https://github.com/modelcontextprotocol/python-sdk/pull/2524#issuecomment-4596910584",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/python-sdk/issues/1257"
+      ],
+      "summary": "Added Windows CLI validation for a shell=True removal PR and flagged remaining Pyright test errors."
     }
   ]
 }
