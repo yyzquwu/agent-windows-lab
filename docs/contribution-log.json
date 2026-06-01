@@ -73,6 +73,16 @@
         "https://github.com/modelcontextprotocol/python-sdk/issues/1257"
       ],
       "summary": "Added Windows CLI validation for a shell=True removal PR and flagged remaining Pyright test errors."
+    },
+    {
+      "date": "2026-06-01",
+      "repo": "modelcontextprotocol/typescript-sdk",
+      "type": "pr-comment",
+      "url": "https://github.com/modelcontextprotocol/typescript-sdk/pull/1911#issuecomment-4596989470",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/typescript-sdk/issues/1858"
+      ],
+      "summary": "Added Windows CJS consumer validation for the Express package export fix and identified the remaining server package require export blocker."
     }
   ]
 }
