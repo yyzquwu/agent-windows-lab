@@ -50,6 +50,11 @@ jobs:
       - name: Verify issue packet report
         run: python .\scripts\verify_redacted_report.py .\artifacts\issue-packet\agent-windows-lab-report.json
 
+      - name: Select upstream target
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .\scripts\select_upstream_target.py --out .\artifacts\target-selection --limit-per-query 2
+
       - name: Upload redacted evidence
         if: always()
         uses: actions/upload-artifact@v7.0.1

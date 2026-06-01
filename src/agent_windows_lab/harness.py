@@ -72,6 +72,11 @@ ISSUE_TARGETS: dict[str, dict[str, str]] = {
         "url": "https://github.com/microsoft/playwright-mcp",
         "focus": "Browser-agent MCP startup, profile path, and Windows stdio evidence",
     },
+    "browser-use": {
+        "repo": "browser-use/browser-use",
+        "url": "https://github.com/browser-use/browser-use",
+        "focus": "Browser-agent launch, profile, path, and shell behavior on Windows",
+    },
 }
 
 

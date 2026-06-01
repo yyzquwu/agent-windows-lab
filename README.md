@@ -17,6 +17,7 @@ python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --case stdio --redact --json
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --case subprocess --case encoding --redact
 python .\scripts\run_agent_windows_lab.py --out .\artifacts\issue-packet --case mcp --case browser --case shell --issue-target modelcontextprotocol-python-sdk
+python .\scripts\select_upstream_target.py --out .\artifacts\target-selection
 python .\scripts\verify_redacted_report.py .\artifacts\agent-windows-lab-report.json
 python -m unittest discover -s tests
 ```
@@ -43,8 +44,12 @@ Use `--issue-target` to generate a redacted upstream packet:
 - `agent-windows-lab-report.md`
 - `agent-windows-lab-issue.md`
 
-Issue targets currently include `modelcontextprotocol-python-sdk`,
+Issue targets currently include `browser-use`, `modelcontextprotocol-python-sdk`,
 `modelcontextprotocol-servers`, and `microsoft-playwright-mcp`.
+
+Use `select_upstream_target.py` to scan active MCP/browser/agent repos, avoid
+already-logged contributions in `docs/contribution-log.json`, and rank the next
+non-duplicate Windows issue or PR where a redacted packet would help.
 
 ## Current Focus
 
@@ -63,7 +68,7 @@ On 2026-05-31, the harness completed end-to-end on Windows 11 with:
 
 - 5 passing checks
 - 3 warning/evidence checks
-- 21 passing unit tests
+- 26 passing unit tests
 
 The most useful findings were CRLF text-mode stdout, child Python stdout
 defaulting to `cp1252`, and long nested path failure at 416 characters. See

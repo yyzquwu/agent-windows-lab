@@ -96,6 +96,7 @@ class HarnessTests(unittest.TestCase):
         )
 
     def test_available_issue_targets_include_first_upstream_lanes(self) -> None:
+        self.assertIn("browser-use", available_issue_targets())
         self.assertIn("modelcontextprotocol-python-sdk", available_issue_targets())
         self.assertIn("microsoft-playwright-mcp", available_issue_targets())
 
