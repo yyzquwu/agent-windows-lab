@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -613,7 +615,12 @@ class HarnessTests(unittest.TestCase):
         self.assertFalse(result.details["env_key_probe_uses_isolated_cwd"], result.details)
 
     def test_browser_use_mcp_env_key_probe_resolves_relative_isolated_pythonpath(self) -> None:
-        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+        fixture_root = ROOT / ".tmp"
+        fixture_root.mkdir(exist_ok=True)
+        raw_path = fixture_root / f"agent-windows-lab-test-relative-pythonpath-{uuid.uuid4().hex}"
+        raw_path.mkdir()
+        try:
+            raw = str(raw_path)
             package = Path(raw) / "browser_use"
             package.mkdir()
             (package / "__init__.py").write_text("", encoding="utf-8")
@@ -656,6 +663,8 @@ class HarnessTests(unittest.TestCase):
                 clear=False,
             ):
                 result = check_browser_use_mcp_env_key_probe()
+        finally:
+            shutil.rmtree(raw_path, ignore_errors=True)
 
         self.assertEqual(result.status, "pass", result.details)
         self.assertTrue(result.details["env_key_probe_uses_isolated_cwd"], result.details)
