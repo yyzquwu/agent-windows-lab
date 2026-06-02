@@ -97,6 +97,17 @@
       "type": "issue-comment",
       "url": "https://github.com/browser-use/browser-use/issues/4846#issuecomment-4598782993",
       "summary": "Added Windows raw-MCP evidence for the Browser Use MCP navigation/state/screenshot cascade."
+    },
+    {
+      "date": "2026-06-02",
+      "repo": "modelcontextprotocol/servers",
+      "type": "pull-request",
+      "url": "https://github.com/modelcontextprotocol/servers/pull/4277",
+      "related_urls": [
+        "https://github.com/modelcontextprotocol/servers/issues/3174",
+        "https://github.com/modelcontextprotocol/servers/pull/3353"
+      ],
+      "summary": "Opened a Windows filesystem roots regression-test PR for VS Code-style encoded drive-colon file URIs."
     }
   ]
 }
