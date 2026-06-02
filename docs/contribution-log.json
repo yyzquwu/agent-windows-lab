@@ -108,6 +108,16 @@
         "https://github.com/modelcontextprotocol/servers/pull/3353"
       ],
       "summary": "Opened a Windows filesystem roots regression-test PR for VS Code-style encoded drive-colon file URIs."
+    },
+    {
+      "date": "2026-06-02",
+      "repo": "browser-use/browser-use",
+      "type": "pull-request",
+      "url": "https://github.com/browser-use/browser-use/pull/4956",
+      "related_urls": [
+        "https://github.com/browser-use/browser-use/issues/3912"
+      ],
+      "summary": "Opened a Windows CLI process-liveness regression-test PR covering os.kill-free PID checks and tunnel termination."
     }
   ]
 }
