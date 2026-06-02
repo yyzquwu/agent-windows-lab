@@ -223,6 +223,106 @@ def check_long_path_probe() -> CheckResult:
             )
 
 
+def _powershell_known_folder(name: str) -> dict[str, Any]:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        return {"available": False}
+    completed = _run(
+        [
+            powershell,
+            "-NoProfile",
+            "-Command",
+            f"[Environment]::GetFolderPath('{name}')",
+        ]
+    )
+    return {
+        "available": True,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def _node_stat_path(path: str) -> dict[str, Any]:
+    node = shutil.which("node")
+    if not node:
+        return {"available": False}
+    script = (
+        "const fs = require('fs');"
+        "const p = process.argv[1];"
+        "try {"
+        "  const s = fs.statSync(p);"
+        "  console.log(JSON.stringify({ok:true,isDirectory:s.isDirectory()}));"
+        "} catch (e) {"
+        "  console.log(JSON.stringify({ok:false,code:e.code,message:e.message,path:e.path}));"
+        "}"
+    )
+    completed = _run([node, "-e", script, path])
+    payload = _parse_json_stdout(completed.stdout)
+    return {
+        "available": True,
+        "returncode": completed.returncode,
+        "payload": payload,
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def check_windows_desktop_known_folder_probe() -> CheckResult:
+    home = Path.home()
+    userprofile = os.environ.get("USERPROFILE")
+    assumed_desktop = home / "Desktop"
+    powershell_desktop = _powershell_known_folder("Desktop")
+    known_desktop = powershell_desktop.get("stdout") or None
+    candidates = {
+        "path_home_desktop": str(assumed_desktop),
+        "powershell_known_folder_desktop": known_desktop,
+    }
+    unique_paths = list(dict.fromkeys(path for path in candidates.values() if path))
+    existence = [
+        {
+            "path": path,
+            "python_exists": Path(path).exists(),
+            "python_is_dir": Path(path).is_dir(),
+            "node_stat": _node_stat_path(path),
+        }
+        for path in unique_paths
+    ]
+    assumed_exists = assumed_desktop.exists()
+    known_exists = bool(known_desktop and Path(known_desktop).exists())
+    desktop_paths_differ = bool(known_desktop and str(assumed_desktop) != str(Path(known_desktop)))
+
+    if os.name != "nt":
+        status = "skip"
+        summary = "Windows Desktop known-folder probe is only relevant on Windows."
+    elif known_exists and desktop_paths_differ:
+        status = "warn"
+        summary = "Windows known-folder Desktop exists, but it differs from the default USERPROFILE Desktop path."
+    elif known_exists and assumed_exists:
+        status = "pass"
+        summary = "Both the default Desktop path and Windows known-folder Desktop exist."
+    elif not assumed_exists:
+        status = "warn"
+        summary = "The default USERPROFILE Desktop path does not exist; filesystem server configs should use the resolved known-folder path."
+    else:
+        status = "pass"
+        summary = "Default USERPROFILE Desktop path exists."
+
+    return CheckResult(
+        name="windows_desktop_known_folder_probe",
+        status=status,
+        summary=summary,
+        details={
+            "userprofile": userprofile,
+            "path_home": str(home),
+            "desktop_paths_differ": desktop_paths_differ,
+            "candidates": candidates,
+            "powershell_known_folder": powershell_desktop,
+            "existence": existence,
+            "related_upstream": "modelcontextprotocol/servers#1469",
+        },
+    )
+
+
 def check_subprocess_argument_roundtrip() -> CheckResult:
     with _temporary_directory(prefix="Agent Windows Lab ") as raw:
         root = Path(raw)
@@ -1433,6 +1533,7 @@ CASE_CHECKS: dict[str, tuple[CheckFn, ...]] = {
     ),
     "environment": (check_environment,),
     "encoding": (check_python_child_stdout_encoding, check_shell_encoding_probe),
+    "filesystem": (check_windows_desktop_known_folder_probe, check_path_shapes, check_long_path_probe),
     "mcp": (check_stdio_newline_framing, check_mcp_stdio_jsonrpc_probe),
     "mcp-python-sdk-session": (check_mcp_python_sdk_session_lifecycle_probe,),
     "paths": (check_path_shapes, check_long_path_probe),
@@ -1554,7 +1655,9 @@ def redact_report(report: dict[str, Any]) -> dict[str, Any]:
     def redact_value(value: Any) -> Any:
         if isinstance(value, dict):
             return {
-                key: redact_hex_string(item) if key.endswith("_hex") and isinstance(item, str) else redact_value(item)
+                redact_string(key): redact_hex_string(item)
+                if key.endswith("_hex") and isinstance(item, str)
+                else redact_value(item)
                 for key, item in value.items()
             }
         if isinstance(value, list):

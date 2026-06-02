@@ -34,6 +34,7 @@ from agent_windows_lab.harness import (
     check_shell_launch_context,
     check_stdio_newline_framing,
     check_subprocess_argument_roundtrip,
+    check_windows_desktop_known_folder_probe,
     issue_packet_to_markdown,
     redact_report,
     report_to_markdown,
@@ -92,6 +93,36 @@ class HarnessTests(unittest.TestCase):
         result = check_browser_agent_environment_probe()
         self.assertIn(result.status, {"pass", "warn"}, result.details)
         self.assertTrue(result.details["profile_roundtrip"]["ok"])
+
+    def test_windows_desktop_known_folder_probe_is_evidence_not_failure(self) -> None:
+        result = check_windows_desktop_known_folder_probe()
+        self.assertIn(result.status, {"pass", "warn", "skip"}, result.details)
+        self.assertIn("candidates", result.details)
+        self.assertIn("existence", result.details)
+        self.assertEqual(result.details["related_upstream"], "modelcontextprotocol/servers#1469")
+
+    def test_windows_desktop_known_folder_probe_warns_when_known_folder_differs(self) -> None:
+        with patch("agent_windows_lab.harness.os.name", "nt"):
+            with patch("agent_windows_lab.harness.Path.home", return_value=Path("C:/Users/Test")):
+                with patch(
+                    "agent_windows_lab.harness._powershell_known_folder",
+                    return_value={
+                        "available": True,
+                        "returncode": 0,
+                        "stdout": "C:/Users/Test/OneDrive/Desktop",
+                        "stderr": "",
+                    },
+                ):
+                    with patch("agent_windows_lab.harness.Path.exists", return_value=True):
+                        with patch("agent_windows_lab.harness.Path.is_dir", return_value=True):
+                            with patch(
+                                "agent_windows_lab.harness._node_stat_path",
+                                return_value={"available": True, "payload": {"ok": True}},
+                            ):
+                                result = check_windows_desktop_known_folder_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(result.details["desktop_paths_differ"], result.details)
 
     def test_browser_use_mcp_startup_probe_is_opt_in(self) -> None:
         with patch.dict("os.environ", {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": ""}, clear=False):
@@ -761,6 +792,7 @@ class HarnessTests(unittest.TestCase):
                 "browser-use-mcp",
                 "encoding",
                 "environment",
+                "filesystem",
                 "mcp",
                 "mcp-python-sdk-session",
                 "paths",
@@ -801,6 +833,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(names[0], "environment")
         self.assertIn("stdio_newline_framing", names)
         self.assertIn("mcp_stdio_jsonrpc_probe", names)
+
+    def test_run_checks_filesystem_case_contains_desktop_context(self) -> None:
+        report = run_checks(["filesystem"])
+        names = [check["name"] for check in report["checks"]]
+        self.assertEqual(report["cases"], ["filesystem"])
+        self.assertEqual(names[0], "environment")
+        self.assertIn("windows_desktop_known_folder_probe", names)
+        self.assertIn("path_shapes", names)
 
     def test_mcp_python_sdk_session_case_skips_without_sdk(self) -> None:
         with patch("importlib.util.find_spec", return_value=None):

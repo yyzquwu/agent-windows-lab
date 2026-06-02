@@ -17,6 +17,7 @@ python .\scripts\run_agent_windows_lab.py --out .\artifacts --redact
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --case stdio --redact --json
 python .\scripts\run_agent_windows_lab.py --out .\artifacts --case subprocess --case encoding --redact
 python .\scripts\run_agent_windows_lab.py --out .\artifacts\issue-packet --case mcp --case browser --case shell --issue-target modelcontextprotocol-python-sdk
+python .\scripts\run_agent_windows_lab.py --out .\artifacts\filesystem-packet --case filesystem --case mcp --case shell --redact --issue-target modelcontextprotocol-servers
 python .\scripts\run_agent_windows_lab.py --out .\artifacts\python-sdk-session --case mcp-python-sdk-session --redact --issue-target modelcontextprotocol-python-sdk
 python .\scripts\run_agent_windows_lab.py --out .\artifacts\browser-use-mcp --case browser-use-mcp --redact --issue-target browser-use
 python .\scripts\select_upstream_target.py --out .\artifacts\target-selection --comment-template
@@ -36,10 +37,12 @@ The verifier script fails if redacted output still contains common absolute
 Windows, UNC, or POSIX tool paths.
 
 Use `--case` for focused, issue-ready repro reports. Available cases are
-`browser`, `browser-use-mcp`, `environment`, `paths`, `subprocess`, `encoding`,
-`mcp`, `mcp-python-sdk-session`, `shell`, and `stdio`; repeat `--case` to
+`browser`, `browser-use-mcp`, `encoding`, `environment`, `filesystem`, `mcp`,
+`mcp-python-sdk-session`, `paths`, `shell`, `stdio`, and `subprocess`; repeat `--case` to
 combine them. Focused reports include the environment check automatically so the
 output still has useful Windows/runtime context for upstream maintainers. The
+`filesystem` case checks Windows Desktop known-folder resolution, Node
+`fs.statSync` visibility, spaces/Unicode paths, and long path behavior. The
 `mcp-python-sdk-session` case is opt-in for an installed `mcp` Python SDK and
 checks `ClientSession` lifecycle behavior. The `browser-use-mcp` case is opt-in
 for external process launch; set
