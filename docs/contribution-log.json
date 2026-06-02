@@ -90,6 +90,13 @@
       "type": "issue-comment",
       "url": "https://github.com/modelcontextprotocol/servers/issues/4138#issuecomment-4597082651",
       "summary": "Added Windows filesystem write_file helper and MCP tool-level validation for a silent-success report."
+    },
+    {
+      "date": "2026-06-02",
+      "repo": "browser-use/browser-use",
+      "type": "issue-comment",
+      "url": "https://github.com/browser-use/browser-use/issues/4846#issuecomment-4598782993",
+      "summary": "Added Windows raw-MCP evidence for the Browser Use MCP navigation/state/screenshot cascade."
     }
   ]
 }
