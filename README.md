@@ -45,6 +45,17 @@ checks `ClientSession` lifecycle behavior. The `browser-use-mcp` case is opt-in
 for external process launch; set
 `AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND` to a JSON command array such as
 `["uvx", "--from", "browser-use[cli]", "browser-use", "--mcp"]`.
+When that command is set, the `browser-use-mcp` case also runs a focused
+env-key probe for browser-use#4846: it compares direct MCP browser tool calls
+with `OPENAI_API_KEY` unset and with a redacted dummy key present. Override the
+dummy key with `AGENT_WINDOWS_LAB_BROWSER_USE_MCP_DUMMY_OPENAI_KEY` only when
+you intentionally need to test a different key shape. For source checkouts,
+set `AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD` to the browser-use repo path. The
+startup probe runs there. The env-key probe keeps that cwd for cwd-dependent
+commands such as `uv run`, but auto-isolates `python -m browser_use.mcp`
+commands with the checkout on `PYTHONPATH` so a local `.env` does not
+contaminate the no-key baseline. Override isolation with
+`AGENT_WINDOWS_LAB_BROWSER_USE_MCP_ISOLATE_CWD=true` or `false`.
 
 Use `--issue-target` to generate a redacted upstream packet:
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from agent_windows_lab.harness import (
     available_cases,
     available_issue_targets,
     check_browser_agent_environment_probe,
+    check_browser_use_mcp_env_key_probe,
     check_browser_use_mcp_startup_probe,
     check_mcp_python_sdk_session_lifecycle_probe,
     check_mcp_stdio_jsonrpc_probe,
@@ -417,6 +419,316 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(result.status, "pass", result.details)
         self.assertTrue(result.details["stderr_hex"])
 
+    def test_browser_use_mcp_env_key_probe_is_opt_in(self) -> None:
+        with patch.dict("os.environ", {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": ""}, clear=False):
+            result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "skip", result.details)
+        self.assertIn("AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND", result.details["command_env_var"])
+
+    def test_browser_use_mcp_env_key_probe_reports_launch_error(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps(["definitely-missing-browser-use-mcp"])},
+            clear=False,
+        ):
+            result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertIn("launch_error", result.details["without_key"])
+
+    def test_browser_use_mcp_env_key_probe_reports_stdout_eof_without_timeout(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "exit_immediately.py"
+            script.write_text("raise SystemExit(0)\n", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(result.details["without_key"]["steps"][0]["stdout_eof"], result.details)
+        self.assertFalse(result.details["without_key"]["steps"][0]["timed_out"], result.details)
+        self.assertLess(result.details["without_key"]["elapsed_seconds"], 3, result.details)
+
+    def test_browser_use_mcp_env_key_probe_warns_on_unexpected_dummy_key_failure(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "browser_use_unexpected_failure_mcp.py"
+            script.write_text(
+                "import json, os, sys\n"
+                "def write(payload):\n"
+                "    sys.stdout.buffer.write(json.dumps(payload).encode('utf-8') + b'\\n')\n"
+                "    sys.stdout.buffer.flush()\n"
+                "while True:\n"
+                "    line = sys.stdin.buffer.readline()\n"
+                "    if not line:\n"
+                "        break\n"
+                "    request = json.loads(line.decode('utf-8'))\n"
+                "    method = request.get('method')\n"
+                "    if method == 'notifications/initialized':\n"
+                "        continue\n"
+                "    if method == 'initialize':\n"
+                "        write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'serverInfo': {'name': 'fake'}}})\n"
+                "        continue\n"
+                "    tool = request.get('params', {}).get('name')\n"
+                "    has_key = bool(os.environ.get('OPENAI_API_KEY'))\n"
+                "    if has_key and tool == 'browser_navigate':\n"
+                "        text = 'Browser failed to launch'\n"
+                "        is_error = True\n"
+                "    elif tool == 'browser_navigate':\n"
+                "        text = 'Navigated to: https://example.com/'\n"
+                "        is_error = False\n"
+                "    elif tool == 'browser_list_tabs':\n"
+                "        text = '[{\"tab_id\":\"1234\",\"url\":\"https://example.com/\"}]'\n"
+                "        is_error = False\n"
+                "    elif tool == 'browser_get_state':\n"
+                "        text = '{\"url\":\"https://example.com/\"}'\n"
+                "        is_error = False\n"
+                "    else:\n"
+                "        text = '{\"size_bytes\": 10}'\n"
+                "        is_error = False\n"
+                "    write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'isError': is_error, 'content': [{'type': 'text', 'text': text}]}})\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(result.details["no_key_navigated"], result.details)
+        self.assertFalse(result.details["env_key_failure_signature"], result.details)
+        self.assertFalse(result.details["dummy_key_completed_cleanly"], result.details)
+        step = result.details["with_dummy_openai_key"]["steps"][1]
+        self.assertTrue(step["response_summary"]["result_is_error"], result.details)
+
+    def test_browser_use_mcp_env_key_probe_warns_on_dirty_no_key_baseline(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "browser_use_dirty_baseline_mcp.py"
+            script.write_text(
+                "import json, os, sys\n"
+                "def write(payload):\n"
+                "    sys.stdout.buffer.write(json.dumps(payload).encode('utf-8') + b'\\n')\n"
+                "    sys.stdout.buffer.flush()\n"
+                "while True:\n"
+                "    line = sys.stdin.buffer.readline()\n"
+                "    if not line:\n"
+                "        break\n"
+                "    request = json.loads(line.decode('utf-8'))\n"
+                "    method = request.get('method')\n"
+                "    if method == 'notifications/initialized':\n"
+                "        continue\n"
+                "    if method == 'initialize':\n"
+                "        write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'serverInfo': {'name': 'fake'}}})\n"
+                "        continue\n"
+                "    tool = request.get('params', {}).get('name')\n"
+                "    has_key = bool(os.environ.get('OPENAI_API_KEY'))\n"
+                "    is_error = False\n"
+                "    if tool == 'browser_navigate':\n"
+                "        text = 'Navigated to: https://example.com/'\n"
+                "    elif not has_key and tool == 'browser_list_tabs':\n"
+                "        text = 'tab enumeration failed'\n"
+                "        is_error = True\n"
+                "    elif tool == 'browser_list_tabs':\n"
+                "        text = '[{\"tab_id\":\"1234\",\"url\":\"https://example.com/\"}]'\n"
+                "    elif tool == 'browser_get_state':\n"
+                "        text = '{\"url\":\"https://example.com/\"}'\n"
+                "    else:\n"
+                "        text = '{\"size_bytes\": 10}'\n"
+                "    write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'isError': is_error, 'content': [{'type': 'text', 'text': text}]}})\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(result.details["no_key_navigated"], result.details)
+        self.assertFalse(result.details["no_key_completed_cleanly"], result.details)
+        self.assertTrue(result.details["dummy_key_completed_cleanly"], result.details)
+        self.assertFalse(result.details["key_gated_failure_signature"], result.details)
+
+    def test_browser_use_mcp_env_key_probe_can_preserve_source_cwd(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "browser_use_cwd_sensitive_mcp.py"
+            script.write_text(
+                "import json, os, sys\n"
+                "def write(payload):\n"
+                "    sys.stdout.buffer.write(json.dumps(payload).encode('utf-8') + b'\\n')\n"
+                "    sys.stdout.buffer.flush()\n"
+                "while True:\n"
+                "    line = sys.stdin.buffer.readline()\n"
+                "    if not line:\n"
+                "        break\n"
+                "    request = json.loads(line.decode('utf-8'))\n"
+                "    method = request.get('method')\n"
+                "    if method == 'notifications/initialized':\n"
+                "        continue\n"
+                "    if method == 'initialize':\n"
+                "        write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'serverInfo': {'name': 'fake'}}})\n"
+                "        continue\n"
+                "    tool = request.get('params', {}).get('name')\n"
+                "    if os.environ.get('AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD') != os.getcwd():\n"
+                "        text = 'source checkout cwd was not preserved'\n"
+                "        write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'isError': True, 'content': [{'type': 'text', 'text': text}]}})\n"
+                "        continue\n"
+                "    text = {\n"
+                "        'browser_navigate': 'Navigated to: https://example.com/',\n"
+                "        'browser_list_tabs': '[{\"tab_id\":\"1234\",\"url\":\"https://example.com/\"}]',\n"
+                "        'browser_get_state': '{\"url\":\"https://example.com/\"}',\n"
+                "        'browser_screenshot': '{\"size_bytes\": 10}',\n"
+                "    }.get(tool, 'unknown')\n"
+                "    write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'content': [{'type': 'text', 'text': text}]}})\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD": raw,
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_ISOLATE_CWD": "false",
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertFalse(result.details["env_key_probe_uses_isolated_cwd"], result.details)
+
+    def test_browser_use_mcp_env_key_probe_resolves_relative_isolated_pythonpath(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            package = Path(raw) / "browser_use"
+            package.mkdir()
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "mcp.py").write_text(
+                "import json, sys\n"
+                "def write(payload):\n"
+                "    sys.stdout.buffer.write(json.dumps(payload).encode('utf-8') + b'\\n')\n"
+                "    sys.stdout.buffer.flush()\n"
+                "while True:\n"
+                "    line = sys.stdin.buffer.readline()\n"
+                "    if not line:\n"
+                "        break\n"
+                "    request = json.loads(line.decode('utf-8'))\n"
+                "    method = request.get('method')\n"
+                "    if method == 'notifications/initialized':\n"
+                "        continue\n"
+                "    if method == 'initialize':\n"
+                "        write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'serverInfo': {'name': 'fake'}}})\n"
+                "        continue\n"
+                "    tool = request.get('params', {}).get('name')\n"
+                "    text = {\n"
+                "        'browser_navigate': 'Navigated to: https://example.com/',\n"
+                "        'browser_list_tabs': '[{\"tab_id\":\"1234\",\"url\":\"https://example.com/\"}]',\n"
+                "        'browser_get_state': '{\"url\":\"https://example.com/\"}',\n"
+                "        'browser_screenshot': '{\"size_bytes\": 10}',\n"
+                "    }.get(tool, 'unknown')\n"
+                "    write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'content': [{'type': 'text', 'text': text}]}})\n",
+                encoding="utf-8",
+            )
+            relative_checkout = os.path.relpath(raw, Path.cwd())
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps(
+                        [sys.executable, "-m", "browser_use.mcp"]
+                    ),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD": relative_checkout,
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "pass", result.details)
+        self.assertTrue(result.details["env_key_probe_uses_isolated_cwd"], result.details)
+
+    def test_browser_use_mcp_env_key_probe_detects_4846_signature(self) -> None:
+        with _temporary_directory(prefix="agent-windows-lab-test-") as raw:
+            script = Path(raw) / "browser_use_4846_mcp.py"
+            script.write_text(
+                "import json, os, sys\n"
+                "def write(payload):\n"
+                "    sys.stdout.buffer.write(json.dumps(payload).encode('utf-8') + b'\\n')\n"
+                "    sys.stdout.buffer.flush()\n"
+                "while True:\n"
+                "    line = sys.stdin.buffer.readline()\n"
+                "    if not line:\n"
+                "        break\n"
+                "    request = json.loads(line.decode('utf-8'))\n"
+                "    method = request.get('method')\n"
+                "    if method == 'notifications/initialized':\n"
+                "        continue\n"
+                "    if method == 'initialize':\n"
+                "        write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'serverInfo': {'name': 'fake'}}})\n"
+                "        continue\n"
+                "    tool = request.get('params', {}).get('name')\n"
+                "    write({'jsonrpc': '2.0', 'method': 'notifications/progress', 'params': {'tool': tool}})\n"
+                "    has_key = bool(os.environ.get('OPENAI_API_KEY'))\n"
+                "    if not has_key:\n"
+                "        if 'OPENAI_API_KEY' in os.environ:\n"
+                "            text = 'OPENAI_API_KEY was not removed'\n"
+                "            write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'isError': True, 'content': [{'type': 'text', 'text': text}]}})\n"
+                "            continue\n"
+                "        if os.environ.get('AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD') == os.getcwd():\n"
+                "            text = 'source checkout cwd was not isolated'\n"
+                "            write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'isError': True, 'content': [{'type': 'text', 'text': text}]}})\n"
+                "            continue\n"
+                "        text = {\n"
+                "            'browser_navigate': 'Navigated to: https://example.com/',\n"
+                "            'browser_list_tabs': '[{\"tab_id\":\"1234\",\"url\":\"https://example.com/\"}]',\n"
+                "            'browser_get_state': '{\"url\":\"https://example.com/\"}',\n"
+                "            'browser_screenshot': '{\"size_bytes\": 10}',\n"
+                "        }.get(tool, 'unknown')\n"
+                "    else:\n"
+                "        text = {\n"
+                "            'browser_navigate': 'Error: Event handler BrowserStartEvent timed out after 30.0s',\n"
+                "            'browser_list_tabs': '[]',\n"
+                "            'browser_get_state': 'Error: Expected at least one handler to return a non-None result',\n"
+                "            'browser_screenshot': 'Error: Root CDP client not initialized',\n"
+                "        }.get(tool, 'unknown')\n"
+                "    write({'jsonrpc': '2.0', 'id': request.get('id'), 'result': {'content': [{'type': 'text', 'text': text}]}})\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND": json.dumps([sys.executable, str(script)]),
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD": raw,
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_ISOLATE_CWD": "true",
+                    "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S": "5",
+                },
+                clear=False,
+            ):
+                result = check_browser_use_mcp_env_key_probe()
+
+        self.assertEqual(result.status, "warn", result.details)
+        self.assertTrue(result.details["no_key_navigated"], result.details)
+        self.assertTrue(result.details["no_key_completed_cleanly"], result.details)
+        self.assertTrue(result.details["env_key_failure_signature"], result.details)
+        self.assertTrue(result.details["key_gated_failure_signature"], result.details)
+        self.assertTrue(result.details["dummy_openai_key_present"])
+        step = result.details["with_dummy_openai_key"]["steps"][-1]
+        self.assertIn("response_summary", step)
+        self.assertNotIn("response", step)
+
     def test_run_all_checks_report_shape(self) -> None:
         report = run_all_checks()
         names = {check["name"] for check in report["checks"]}
@@ -503,6 +815,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(names[0], "environment")
         self.assertIn("browser_agent_environment_probe", names)
         self.assertIn("browser_use_mcp_startup_probe", names)
+        self.assertIn("browser_use_mcp_env_key_probe", names)
 
     def test_run_checks_rejects_unknown_case(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown case"):

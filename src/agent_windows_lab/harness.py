@@ -803,6 +803,18 @@ def _float_env(name: str, default: float) -> tuple[float, str | None]:
     return value, None
 
 
+def _bool_env(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return None
+
+
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
@@ -834,8 +846,10 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
 def check_browser_use_mcp_startup_probe() -> CheckResult:
     command_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND"
     timeout_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S"
+    cwd_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD"
     timeout_s, invalid_timeout = _float_env(timeout_var, 45)
     command = _json_env_list(command_var)
+    command_cwd = os.environ.get(cwd_var) or None
     recommended = ["uvx", "--from", "browser-use[cli]", "browser-use", "--mcp"]
     if command is None:
         return CheckResult(
@@ -845,6 +859,7 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             details={
                 "command_env_var": command_var,
                 "timeout_env_var": timeout_var,
+                "cwd_env_var": cwd_var,
                 "timeout_seconds": timeout_s,
                 "invalid_timeout_env_value": invalid_timeout,
                 "recommended_command": recommended,
@@ -859,6 +874,7 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             details={
                 "command_env_var": command_var,
                 "timeout_env_var": timeout_var,
+                "cwd_env_var": cwd_var,
                 "timeout_seconds": timeout_s,
                 "invalid_timeout_env_value": invalid_timeout,
             },
@@ -884,6 +900,7 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env={**os.environ, "PYTHONUTF8": "1"},
+            cwd=command_cwd,
         )
         assert process.stdin is not None
         assert process.stdout is not None
@@ -943,6 +960,7 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             ),
             details={
                 "command": command,
+                "cwd": command_cwd,
                 "timeout_seconds": timeout_s,
                 "invalid_timeout_env_value": invalid_timeout,
                 "elapsed_seconds": elapsed_s,
@@ -982,6 +1000,7 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             summary="Browser Use MCP process timed out before answering initialize.",
             details={
                 "command": command,
+                "cwd": command_cwd,
                 "timeout_seconds": timeout_s,
                 "invalid_timeout_env_value": invalid_timeout,
                 "elapsed_seconds": elapsed_s,
@@ -1002,6 +1021,7 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
             summary="Browser Use MCP startup command could not be launched.",
             details={
                 "command": command,
+                "cwd": command_cwd,
                 "timeout_seconds": timeout_s,
                 "invalid_timeout_env_value": invalid_timeout,
                 "elapsed_seconds": elapsed_s,
@@ -1015,9 +1035,402 @@ def check_browser_use_mcp_startup_probe() -> CheckResult:
                     stream.close()
 
 
+def _browser_use_mcp_response_text(response: dict[str, Any]) -> str:
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return json.dumps(response, sort_keys=True)[:1000]
+    content = result.get("content")
+    if not isinstance(content, list):
+        return json.dumps(response, sort_keys=True)[:1000]
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, dict):
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            elif isinstance(item.get("type"), str):
+                parts.append(item["type"])
+            else:
+                parts.append(json.dumps(item, sort_keys=True))
+        else:
+            parts.append(str(item))
+    return "\n".join(parts)
+
+
+def _browser_use_mcp_response_summary(response: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "id": response.get("id"),
+        "has_result": isinstance(response.get("result"), dict),
+        "has_error": "error" in response,
+    }
+    if isinstance(response.get("error"), dict):
+        error = response["error"]
+        summary["error"] = {
+            "code": error.get("code"),
+            "message": str(error.get("message", ""))[:1000],
+        }
+    result = response.get("result")
+    if isinstance(result, dict):
+        summary["result_keys"] = sorted(str(key) for key in result.keys())
+        summary["result_is_error"] = bool(result.get("isError"))
+        content = result.get("content")
+        if isinstance(content, list):
+            summary["content_count"] = len(content)
+            summary["content_types"] = [
+                str(item.get("type", "unknown")) if isinstance(item, dict) else type(item).__name__
+                for item in content[:10]
+            ]
+    return summary
+
+
+def _browser_use_mcp_command_can_isolate_cwd(command: list[str]) -> bool:
+    executable = Path(command[0]).name.lower() if command else ""
+    python_names = {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"}
+    return executable in python_names and "-m" in command and "browser_use.mcp" in command
+
+
+def _browser_use_mcp_tool_sequence(
+    command: list[str],
+    *,
+    timeout_s: float,
+    cwd: str | None,
+    pythonpath_root: str | None,
+    env_overrides: dict[str, str | None],
+) -> dict[str, Any]:
+    env = {**os.environ, "PYTHONUTF8": "1"}
+    if pythonpath_root:
+        env["PYTHONPATH"] = (
+            pythonpath_root if not env.get("PYTHONPATH") else pythonpath_root + os.pathsep + env["PYTHONPATH"]
+        )
+    for key, value in env_overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+
+    process: subprocess.Popen[bytes] | None = None
+    started = time.monotonic()
+    stdout_queue: queue.Queue[bytes | None] = queue.Queue()
+    stderr_bytes = bytearray()
+    steps: list[dict[str, Any]] = []
+
+    def read_next_response(expected_id: int, step_timeout_s: float) -> tuple[dict[str, Any] | None, str, bool, bool]:
+        deadline = time.monotonic() + step_timeout_s
+        raw_parts: list[bytes] = []
+        while time.monotonic() < deadline:
+            try:
+                raw = stdout_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if raw is None:
+                return None, b"".join(raw_parts).decode("utf-8", errors="replace"), False, True
+            raw_parts.append(raw)
+            try:
+                response = json.loads(raw.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            if response.get("id") != expected_id:
+                continue
+            return response, b"".join(raw_parts).decode("utf-8", errors="replace"), False, False
+        return None, b"".join(raw_parts).decode("utf-8", errors="replace"), True, False
+
+    def send(payload: dict[str, Any]) -> str | None:
+        if process is None or process.stdin is None:
+            return "stdin unavailable"
+        try:
+            process.stdin.write((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+            process.stdin.flush()
+        except OSError as exc:
+            return repr(exc)
+        return None
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            cwd=cwd,
+        )
+        assert process.stdout is not None
+        assert process.stderr is not None
+
+        def read_stdout() -> None:
+            while True:
+                chunk = process.stdout.readline()
+                if not chunk:
+                    stdout_queue.put(None)
+                    return
+                stdout_queue.put(chunk)
+
+        def read_stderr() -> None:
+            while True:
+                chunk = process.stderr.read(4096)
+                if not chunk:
+                    return
+                if len(stderr_bytes) < 4000:
+                    stderr_bytes.extend(chunk[: 4000 - len(stderr_bytes)])
+
+        stdout_reader = threading.Thread(target=read_stdout, daemon=True)
+        stderr_reader = threading.Thread(target=read_stderr, daemon=True)
+        stdout_reader.start()
+        stderr_reader.start()
+
+        initialize_error = send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "clientInfo": {"name": "agent-windows-lab", "version": "0.1.0"},
+                    "capabilities": {},
+                },
+            }
+        )
+        if initialize_error:
+            steps.append({"name": "initialize", "error": initialize_error})
+            return {"steps": steps, "elapsed_seconds": round(time.monotonic() - started, 3)}
+        response, raw, timed_out, stdout_eof = read_next_response(1, timeout_s)
+        steps.append(
+            {
+                "name": "initialize",
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "timed_out": timed_out,
+                "stdout_eof": stdout_eof,
+                "response": response or {},
+                "stdout": raw[:1000],
+            }
+        )
+        if timed_out or stdout_eof:
+            return {"steps": steps, "elapsed_seconds": round(time.monotonic() - started, 3)}
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+        for message_id, tool_name, arguments, step_timeout_s in (
+            (2, "browser_navigate", {"url": "https://example.com/"}, timeout_s),
+            (3, "browser_list_tabs", {}, min(timeout_s, 20)),
+            (4, "browser_get_state", {"include_screenshot": False}, min(timeout_s, 30)),
+            (5, "browser_screenshot", {"full_page": False}, min(timeout_s, 30)),
+        ):
+            step_started = time.monotonic()
+            send_error = send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": message_id,
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                }
+            )
+            if send_error:
+                steps.append({"name": tool_name, "elapsed_seconds": 0, "error": send_error})
+                break
+            response, raw, timed_out, stdout_eof = read_next_response(message_id, step_timeout_s)
+            text = _browser_use_mcp_response_text(response or {})
+            steps.append(
+                {
+                    "name": tool_name,
+                    "elapsed_seconds": round(time.monotonic() - step_started, 3),
+                    "timed_out": timed_out,
+                    "stdout_eof": stdout_eof,
+                    "text": text[:1000],
+                    "response_summary": _browser_use_mcp_response_summary(response or {}),
+                    "stdout": raw[:1000],
+                }
+            )
+            if timed_out or stdout_eof:
+                break
+
+        return {
+            "steps": steps,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "returncode": process.poll(),
+            "stderr": bytes(stderr_bytes).decode("utf-8", errors="replace")[:4000],
+        }
+    except OSError as exc:
+        steps.append({"name": "launch", "error": repr(exc)})
+        return {
+            "steps": steps,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "launch_error": repr(exc),
+            "stderr": bytes(stderr_bytes).decode("utf-8", errors="replace")[:4000],
+        }
+    finally:
+        if process is not None:
+            _terminate_process_tree(process)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+
+
+def _step_text(sequence: dict[str, Any], name: str) -> str:
+    for step in sequence.get("steps", []):
+        if step.get("name") == name:
+            return step.get("text", "")
+    return ""
+
+
+def _browser_use_mcp_sequence_completed_cleanly(sequence: dict[str, Any]) -> bool:
+    if sequence.get("launch_error"):
+        return False
+    expected = {"initialize", "browser_navigate", "browser_list_tabs", "browser_get_state", "browser_screenshot"}
+    observed: set[str] = set()
+    for step in sequence.get("steps", []):
+        name = step.get("name")
+        if isinstance(name, str):
+            observed.add(name)
+        if step.get("timed_out") or step.get("error"):
+            return False
+        if step.get("stdout_eof"):
+            return False
+        response_summary = step.get("response_summary")
+        if isinstance(response_summary, dict) and response_summary.get("has_error"):
+            return False
+        if isinstance(response_summary, dict) and response_summary.get("result_is_error"):
+            return False
+        text = step.get("text")
+        if isinstance(text, str) and text.lstrip().lower().startswith("error:"):
+            return False
+    return expected.issubset(observed)
+
+
+def _browser_use_mcp_env_key_signature(sequence: dict[str, Any]) -> bool:
+    navigate = _step_text(sequence, "browser_navigate")
+    list_tabs = _step_text(sequence, "browser_list_tabs").strip()
+    get_state = _step_text(sequence, "browser_get_state")
+    screenshot = _step_text(sequence, "browser_screenshot")
+    return (
+        "BrowserStartEvent" in navigate
+        and "timed out" in navigate
+        and list_tabs == "[]"
+        and "Expected at least one handler" in get_state
+        and "Root CDP client not initialized" in screenshot
+    )
+
+
+def check_browser_use_mcp_env_key_probe() -> CheckResult:
+    command_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_COMMAND"
+    timeout_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_TIMEOUT_S"
+    dummy_key_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_DUMMY_OPENAI_KEY"
+    cwd_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_CWD"
+    isolate_cwd_var = "AGENT_WINDOWS_LAB_BROWSER_USE_MCP_ISOLATE_CWD"
+    timeout_s, invalid_timeout = _float_env(timeout_var, 45)
+    command = _json_env_list(command_var)
+    command_cwd = os.environ.get(cwd_var) or None
+    recommended = ["uvx", "--from", "browser-use[cli]", "browser-use", "--mcp"]
+    if command is None:
+        return CheckResult(
+            name="browser_use_mcp_env_key_probe",
+            status="skip",
+            summary="Browser Use MCP env-key probe is opt-in; set a JSON command array to run it.",
+            details={
+                "command_env_var": command_var,
+                "timeout_env_var": timeout_var,
+                "dummy_key_env_var": dummy_key_var,
+                "cwd_env_var": cwd_var,
+                "isolate_cwd_env_var": isolate_cwd_var,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+                "recommended_command": recommended,
+                "related_upstream": "browser-use/browser-use#4846",
+            },
+        )
+    if not command:
+        return CheckResult(
+            name="browser_use_mcp_env_key_probe",
+            status="warn",
+            summary="Browser Use MCP env-key command env var was set but was not a JSON string array.",
+            details={
+                "command_env_var": command_var,
+                "timeout_env_var": timeout_var,
+                "dummy_key_env_var": dummy_key_var,
+                "cwd_env_var": cwd_var,
+                "isolate_cwd_env_var": isolate_cwd_var,
+                "timeout_seconds": timeout_s,
+                "invalid_timeout_env_value": invalid_timeout,
+            },
+        )
+
+    dummy_key = os.environ.get(dummy_key_var, "sk-proj-redacted-agent-windows-lab")
+    isolate_override = _bool_env(isolate_cwd_var)
+    isolate_cwd = bool(command_cwd) and (
+        isolate_override if isolate_override is not None else _browser_use_mcp_command_can_isolate_cwd(command)
+    )
+    pythonpath_root = str(Path(command_cwd).resolve()) if isolate_cwd and command_cwd else None
+    with _temporary_directory(prefix="agent-windows-lab-browser-use-no-key-") as no_key_config:
+        without_key = _browser_use_mcp_tool_sequence(
+            command,
+            timeout_s=timeout_s,
+            cwd=no_key_config if isolate_cwd else command_cwd,
+            pythonpath_root=pythonpath_root,
+            env_overrides={
+                "OPENAI_API_KEY": None,
+                "ANTHROPIC_API_KEY": None,
+                "BROWSER_USE_CONFIG_DIR": no_key_config,
+            },
+        )
+    with _temporary_directory(prefix="agent-windows-lab-browser-use-dummy-key-") as dummy_key_config:
+        with_key = _browser_use_mcp_tool_sequence(
+            command,
+            timeout_s=timeout_s,
+            cwd=dummy_key_config if isolate_cwd else command_cwd,
+            pythonpath_root=pythonpath_root,
+            env_overrides={
+                "OPENAI_API_KEY": dummy_key,
+                "ANTHROPIC_API_KEY": None,
+                "BROWSER_USE_CONFIG_DIR": dummy_key_config,
+            },
+        )
+    signature = _browser_use_mcp_env_key_signature(with_key)
+    no_key_navigated = "Navigated to:" in _step_text(without_key, "browser_navigate")
+    no_key_completed_cleanly = _browser_use_mcp_sequence_completed_cleanly(without_key)
+    dummy_key_completed_cleanly = _browser_use_mcp_sequence_completed_cleanly(with_key)
+    key_gated_signature = signature and no_key_completed_cleanly
+    status = "warn" if signature or not no_key_completed_cleanly or not dummy_key_completed_cleanly else "pass"
+    if key_gated_signature:
+        summary = "Browser Use MCP reproduced the env-key browser startup failure signature."
+    elif signature:
+        summary = "Browser Use MCP reproduced the browser startup failure signature; the no-key run also failed."
+    elif no_key_navigated and not no_key_completed_cleanly:
+        summary = "Browser Use MCP no-key baseline failed after navigation."
+    elif not no_key_completed_cleanly:
+        summary = "Browser Use MCP no-key baseline did not complete cleanly."
+    elif not dummy_key_completed_cleanly:
+        summary = "Browser Use MCP dummy-key run failed outside the known startup signature."
+    else:
+        summary = "Browser Use MCP did not reproduce the env-key startup failure signature."
+    return CheckResult(
+        name="browser_use_mcp_env_key_probe",
+        status=status,
+        summary=summary,
+        details={
+            "command": command,
+            "cwd": command_cwd,
+            "env_key_probe_uses_isolated_cwd": isolate_cwd,
+            "isolate_cwd_env_var": isolate_cwd_var,
+            "isolate_cwd_env_value": os.environ.get(isolate_cwd_var),
+            "timeout_seconds": timeout_s,
+            "invalid_timeout_env_value": invalid_timeout,
+            "dummy_openai_key_present": True,
+            "without_key": without_key,
+            "with_dummy_openai_key": with_key,
+            "no_key_navigated": no_key_navigated,
+            "no_key_completed_cleanly": no_key_completed_cleanly,
+            "dummy_key_completed_cleanly": dummy_key_completed_cleanly,
+            "env_key_failure_signature": signature,
+            "key_gated_failure_signature": key_gated_signature,
+            "isolated_config_dirs": True,
+            "related_upstream": "browser-use/browser-use#4846",
+        },
+    )
+
+
 CASE_CHECKS: dict[str, tuple[CheckFn, ...]] = {
     "browser": (check_browser_agent_environment_probe,),
-    "browser-use-mcp": (check_browser_agent_environment_probe, check_browser_use_mcp_startup_probe),
+    "browser-use-mcp": (
+        check_browser_agent_environment_probe,
+        check_browser_use_mcp_startup_probe,
+        check_browser_use_mcp_env_key_probe,
+    ),
     "environment": (check_environment,),
     "encoding": (check_python_child_stdout_encoding, check_shell_encoding_probe),
     "mcp": (check_stdio_newline_framing, check_mcp_stdio_jsonrpc_probe),
