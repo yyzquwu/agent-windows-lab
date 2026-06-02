@@ -125,6 +125,13 @@
       "type": "issue-comment",
       "url": "https://github.com/modelcontextprotocol/servers/issues/3278#issuecomment-4606611065",
       "summary": "Added redacted Windows MCP/path/shell baseline evidence for an Antigravity/Gemini Code Assist MCP server communication hang report."
+    },
+    {
+      "date": "2026-06-02",
+      "repo": "modelcontextprotocol/servers",
+      "type": "issue-comment",
+      "url": "https://github.com/modelcontextprotocol/servers/issues/1469#issuecomment-4607200885",
+      "summary": "Added focused Windows Desktop known-folder and filesystem path evidence for a Filesystem MCP Desktop ENOENT report."
     }
   ]
 }

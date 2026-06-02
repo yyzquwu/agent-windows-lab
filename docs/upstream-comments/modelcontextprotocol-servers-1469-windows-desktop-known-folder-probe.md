@@ -47,3 +47,8 @@ python .\scripts\run_agent_windows_lab.py --out .\artifacts\issue-packet-1469 --
 python .\scripts\verify_redacted_report.py .\artifacts\issue-packet-1469\agent-windows-lab-report.json
 python .\scripts\verify_shareable_artifact.py .\artifacts\issue-packet-1469
 ```
+
+Public harness commit: https://github.com/yyzquwu/agent-windows-lab/commit/8fe9c3e13a35366eb2a1eb7b638ca6a30c91103f
+Windows proof run: https://github.com/yyzquwu/agent-windows-lab/actions/runs/26849365013
+
+Posted at: https://github.com/modelcontextprotocol/servers/issues/1469#issuecomment-4607200885
